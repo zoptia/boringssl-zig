@@ -36,6 +36,9 @@ jobs:
           - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib }
           # Cross-only — wasm32-wasi.
           - { os: ubuntu-latest,    label: wasm32-wasi,          target: wasm32-wasi,          extra: "-Dasm=false", archive_ext: a   }
+          # Android (NDK provides the sysroot incl. libc++, so we pass it via -Dsysroot).
+          - { os: ubuntu-latest,    label: android-aarch64,      target: aarch64-linux-android, extra: "-Dasm=false", archive_ext: a, use_ndk: true }
+          - { os: ubuntu-latest,    label: android-x86_64,       target: x86_64-linux-android,  extra: "-Dasm=false", archive_ext: a, use_ndk: true }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -57,8 +60,25 @@ jobs:
       - name: Show toolchain
         run: zig version
 
+      - name: Set up Android NDK
+        if: matrix.use_ndk
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Resolve Android sysroot
+        if: matrix.use_ndk
+        shell: bash
+        run: |
+          SYSROOT="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          echo "Using sysroot: $SYSROOT"
+          ls "$SYSROOT/usr/include" >/dev/null  # sanity check
+          echo "ZIG_SYSROOT_FLAG=-Dsysroot=$SYSROOT" >> "$GITHUB_ENV"
+
       - name: Build (release)
-        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} -Doptimize=ReleaseFast
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} ${{ env.ZIG_SYSROOT_FLAG }} -Doptimize=ReleaseFast
 
       - name: Stage tarball contents
         # Use git-bash on Windows so the same shell snippet works everywhere.

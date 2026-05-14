@@ -149,7 +149,7 @@ fn collectAsm(
     return list;
 }
 
-fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool, no_cxx_runtime: bool) []const []const u8 {
+fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool, no_cxx_runtime: bool, sysroot: ?[]const u8) []const []const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     list.appendSlice(b.allocator, &.{
         "-std=c++17",
@@ -158,6 +158,11 @@ fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool, no_cxx_ru
         "-fvisibility=hidden",
         "-DBORINGSSL_IMPLEMENTATION",
     }) catch @panic("OOM");
+    // When -Dsysroot is in play, suppress Zig's auto-added libcxx headers so
+    // the SDK's libc++ (added via addSystemIncludePath in applySysroot) wins.
+    if (sysroot != null) {
+        list.appendSlice(b.allocator, &.{ "-nostdinc++", "-nostdlibinc" }) catch @panic("OOM");
+    }
     // BoringSSL upstream CMake applies `-fno-exceptions -fno-rtti` only to the
     // crypto (bcm + libcrypto) target; ssl and pki are built with the default
     // C++ runtime so their classes emit typeinfo. Mirroring that matters when
@@ -294,16 +299,22 @@ fn buildFromSource(
     sources: *Sources,
 ) Libs {
     const t = target.result;
-    // Helper: when -Dsysroot is set, point system include + lib search at it.
-    // Used for iOS (Xcode SDK) and Android (NDK sysroot) where Zig has no
-    // bundled libc/libc++ for the target.
+    // When -Dsysroot is set, headers/libs come from the SDK, not Zig's
+    // bundle. We also disable Zig's bundled libc/libc++ so its includes
+    // don't fight the SDK's (Apple `<math.h>` macros vs Zig libcxx
+    // `<__math_constants_FP_*>` is the classic clash).
+    const use_sdk = sysroot != null;
+    const link_via_zig = !use_sdk;
     const applySysroot = struct {
         fn apply(mod: *std.Build.Module, sr: ?[]const u8, bb: *std.Build) void {
             const s = sr orelse return;
-            // Order matters — c++/v1 first so libc++ headers shadow libc's.
+            // C++ headers first so libc++ shadows the C-only entries.
             mod.addSystemIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/include/c++/v1" }) });
             mod.addSystemIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/include" }) });
             mod.addLibraryPath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/lib" }) });
+            // The SDK provides its own libc++ — record it on the module so
+            // anything linking the produced lib pulls it in.
+            mod.linkSystemLibrary("c++", .{});
         }
     }.apply;
     const is_win_x86_family = t.os.tag == .windows and (t.cpu.arch == .x86 or t.cpu.arch == .x86_64);
@@ -311,15 +322,15 @@ fn buildFromSource(
     // crypto (incl. bcm) is built with -fno-rtti -fno-exceptions to match
     // upstream. ssl and pki use a separate cflag set without those, so their
     // typeinfo gets emitted (test binaries depend on this).
-    const crypto_cflags = baseCxxFlags(b, t, !enable_asm, true);
-    const ssl_pki_cflags = baseCxxFlags(b, t, !enable_asm, false);
+    const crypto_cflags = baseCxxFlags(b, t, !enable_asm, true, sysroot);
+    const ssl_pki_cflags = baseCxxFlags(b, t, !enable_asm, false, sysroot);
 
     // -------- libcrypto --------
     const crypto_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
-        .link_libcpp = true,
+        .link_libc = link_via_zig,
+        .link_libcpp = link_via_zig,
     });
     applySysroot(crypto_mod, sysroot, b);
     crypto_mod.addIncludePath(b.path("include"));
@@ -371,8 +382,8 @@ fn buildFromSource(
     const ssl_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
-        .link_libcpp = true,
+        .link_libc = link_via_zig,
+        .link_libcpp = link_via_zig,
     });
     applySysroot(ssl_mod, sysroot, b);
     ssl_mod.addIncludePath(b.path("include"));
@@ -395,8 +406,8 @@ fn buildFromSource(
         const pki_mod = b.createModule(.{
             .target = target,
             .optimize = optimize,
-            .link_libc = true,
-            .link_libcpp = true,
+            .link_libc = link_via_zig,
+            .link_libcpp = link_via_zig,
         });
         applySysroot(pki_mod, sysroot, b);
         pki_mod.addIncludePath(b.path("include"));
