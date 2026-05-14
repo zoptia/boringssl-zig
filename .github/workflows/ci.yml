@@ -50,20 +50,7 @@ jobs:
         shell: pwsh
         run: |
           irm https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.ps1 | iex
-
-          # zvk v0.0.5+ drops a `bin/zig.exe` shim that doesn't satisfy
-          # Zig's self-location probe — Zig launches but can't find its
-          # adjacent `lib/`, producing
-          #   error: unable to find zig installation directory ...
-          # Bypass the shim by putting the real install directory (which
-          # has both zig.exe AND lib/) on PATH first. `bin/` stays on PATH
-          # too so `zvk` itself remains callable.
           Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.zoptia\zig\bin"
-          $realZigDir = (Get-ChildItem "$env:USERPROFILE\.zoptia\zig\versions" -Directory `
-                          | Select-Object -First 1).FullName
-          if (-not $realZigDir) { Write-Error "no versions/<x.y.z>/ dir found under .zoptia/zig"; exit 1 }
-          Add-Content -Path $env:GITHUB_PATH -Value $realZigDir
-          Write-Host "Real zig dir prepended to PATH: $realZigDir"
 
       - name: Show toolchain
         run: zig version
