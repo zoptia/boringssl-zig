@@ -115,6 +115,15 @@ does not bundle NASM. Build with `-Dasm=false` for a portable build (slower
 crypto), or install NASM in `PATH` and the build will shell out to it. ARM
 Windows uses GAS-format `.S` files and works without external tools.
 
+For `x86_64-windows-msvc`, **`crypto.lib`/`ssl.lib`/`pki.lib` build fine
+and are usable from MSVC consumers**, but Zig 0.16's bundled libcxx
+clashes with `<typeinfo>` from the MSVC SDK when linking a Zig-side
+executable against them — a `using ::type_info;` collision via
+libcxxabi's `cxa_exception.cpp`. Our CI builds `windows-msvc` but does
+not run the smoke test there. C/C++ consumers using `cl.exe`/`link.exe`
+do **not** hit this — they link the `.lib` files with the MSVC C++
+runtime, which is what BoringSSL was designed for on Windows.
+
 ## Build requirements
 
 - **Zig 0.16+** (development tracks Zig nightly `0.17.0-dev.298+ad1b746e2`

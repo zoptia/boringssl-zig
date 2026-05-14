@@ -17,16 +17,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: ""            }
-          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: ""            }
-          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: ""            }
+          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            run_smoke: true  }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            run_smoke: true  }
+          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            run_smoke: true  }
           # macos-13 (x86_64) is paused: GitHub-hosted macos-13 runners are
           # heavily oversubscribed and our jobs sit in `queued` for hours.
           # Re-enable once availability improves, or move to a self-hosted
           # Intel Mac.
           # - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false" }
-          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false" }
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", run_smoke: true  }
+          # windows-msvc: build only. Zig 0.16's bundled libcxx clashes with
+          # MSVC's <typeinfo> when linking a Zig executable for -windows-msvc
+          # (two `type_info` declarations meeting via libcxxabi's
+          # cxa_exception.cpp). BoringSSL's own .lib builds fine — MSVC
+          # consumers link it with their own C++ runtime and never hit this.
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", run_smoke: false }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -62,11 +67,16 @@ jobs:
         run: zig version
 
       - name: Native build + smoke test
+        if: matrix.run_smoke
         # Windows runners get -Dasm=false because the perlasm output for x86/
         # x86_64 is in NASM syntax and Zig does not bundle NASM. Add a
         # `choco install -y nasm` step before this if you want to validate
         # the asm path on Windows too.
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} test
+
+      - name: Native build only
+        if: ${{ !matrix.run_smoke }}
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }}
 
   cross:
     name: cross ${{ matrix.target }}
