@@ -20,7 +20,11 @@ jobs:
           - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: ""            }
           - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: ""            }
           - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: ""            }
-          - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
+          # macos-13 (x86_64) is paused: GitHub-hosted macos-13 runners are
+          # heavily oversubscribed and our jobs sit in `queued` for hours.
+          # Re-enable once availability improves, or move to a self-hosted
+          # Intel Mac.
+          # - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
           - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false" }
           - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false" }
     runs-on: ${{ matrix.os }}
