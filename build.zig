@@ -306,10 +306,19 @@ fn buildFromSource(
     const use_sdk = sysroot != null;
     const link_via_zig = !use_sdk;
     const applySysroot = struct {
-        fn apply(mod: *std.Build.Module, sr: ?[]const u8, bb: *std.Build) void {
+        fn apply(mod: *std.Build.Module, sr: ?[]const u8, bb: *std.Build, tgt: std.Target) void {
             const s = sr orelse return;
             // C++ headers first so libc++ shadows the C-only entries.
             mod.addSystemIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/include/c++/v1" }) });
+            // The Android NDK splits arch-specific headers (e.g. <asm/types.h>
+            // pulled in by <linux/types.h>) into usr/include/<triple>/. Same
+            // for libs. Add those paths first so clang sees them before the
+            // generic include/.
+            if (tgt.os.tag == .linux and tgt.abi.isAndroid()) {
+                const triple = bb.fmt("{s}-linux-android", .{@tagName(tgt.cpu.arch)});
+                mod.addSystemIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/include", triple }) });
+                mod.addLibraryPath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/lib", triple }) });
+            }
             mod.addSystemIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/include" }) });
             mod.addLibraryPath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/lib" }) });
             // The SDK provides its own libc++ — record it on the module so
@@ -332,7 +341,7 @@ fn buildFromSource(
         .link_libc = link_via_zig,
         .link_libcpp = link_via_zig,
     });
-    applySysroot(crypto_mod, sysroot, b);
+    applySysroot(crypto_mod, sysroot, b, t);
     crypto_mod.addIncludePath(b.path("include"));
     crypto_mod.addCSourceFiles(.{
         .files = sources.crypto.srcs,
@@ -385,7 +394,7 @@ fn buildFromSource(
         .link_libc = link_via_zig,
         .link_libcpp = link_via_zig,
     });
-    applySysroot(ssl_mod, sysroot, b);
+    applySysroot(ssl_mod, sysroot, b, t);
     ssl_mod.addIncludePath(b.path("include"));
     ssl_mod.addCSourceFiles(.{
         .files = sources.ssl.srcs,
@@ -409,7 +418,7 @@ fn buildFromSource(
             .link_libc = link_via_zig,
             .link_libcpp = link_via_zig,
         });
-        applySysroot(pki_mod, sysroot, b);
+        applySysroot(pki_mod, sysroot, b, t);
         pki_mod.addIncludePath(b.path("include"));
         var pki_flags: std.ArrayList([]const u8) = .empty;
         pki_flags.appendSlice(b.allocator, ssl_pki_cflags) catch @panic("OOM");
