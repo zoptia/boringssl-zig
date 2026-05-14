@@ -124,46 +124,63 @@ not run the smoke test there. C/C++ consumers using `cl.exe`/`link.exe`
 do **not** hit this — they link the `.lib` files with the MSVC C++
 runtime, which is what BoringSSL was designed for on Windows.
 
-### Mobile platform support (iOS, Android) — experimental
+### Mobile platform support
 
-Zig 0.16/0.17 doesn't bundle the iOS SDK or Android NDK, so source-mode
-cross-compilation to `aarch64-ios` or `aarch64-linux-android` fails by
-default with `'assert.h' file not found`.
+#### Android — via the musl tarballs (no NDK required)
 
-There's a `-Dsysroot=<path>` flag you can point at an installed SDK:
+The two `linux-musl-{aarch64,x86_64}` prebuilt tarballs **work as
+drop-ins for Android apps**, even though they were never built against
+the NDK:
+
+- The release-mode `.a` only references standard POSIX, C, pthread,
+  and `operator new`/`operator delete` symbols. Android's Bionic libc
+  + libc++ provide every one of them with the same C calling
+  convention and (since they sit on the same Linux/AArch64 kernel ABI)
+  the same syscall behavior.
+- Build:
+
+  ```sh
+  # On any host that can do Zig cross-compile
+  zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseFast
+  ```
+
+- Link inside an Android NDK project: feed `libcrypto.a` / `libssl.a`
+  to `ld` (or `add_library(... IMPORTED STATIC)`) like any other
+  static lib. No NDK headers, no Zig build, no Rust toolchain on the
+  consumer side.
+
+Caveat: this is symbol-analysis correctness, not field-tested at
+runtime on a device — if you do verify on a phone, please open an
+issue with the result.
+
+#### iOS — Xcode SDK still required
+
+iOS lacks an equivalent "swap the libc" escape hatch: it's not Linux,
+not Mach-O-compatible with macOS in the way the linker enforces, and
+Zig 0.16/0.17 can't fully suppress its bundled libcxx headers even
+with `link_libcpp = false` + `-nostdinc++`, so the SDK's libc++ never
+wins the include ordering against Zig's. The `-Dsysroot` and
+`applySysroot` plumbing in `build.zig` is ready — point it at
+`$(xcrun --sdk iphoneos --show-sdk-path)` once Zig's `link_libcpp`
+gets stricter and you should be unblocked. iOS prebuilt tarballs are
+not in the current release.
+
+#### `-Dsysroot=<path>` for bring-your-own-SDK
+
+If you _do_ have a platform SDK and want the build to use it
+(e.g. linking against system libraries on an embedded board, or for
+Android-with-NDK experimentation), the option is plumbed through:
 
 ```sh
-# iOS (needs Xcode on a macOS host)
-SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-zig build -Dtarget=aarch64-ios -Dsysroot="$SDK"
-
-# Android
-zig build -Dtarget=aarch64-linux-android \
-  -Dsysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/<host>/sysroot
+zig build -Dtarget=<triple> -Dsysroot=<path-to-sysroot>
 ```
 
-**Caveats — these targets are not yet officially supported:**
-
-- **iOS**: `-Dsysroot` gets you past the C header lookup, but Zig
-  0.16/0.17's bundled libc++ headers re-emerge on the include path
-  even with `link_libcpp = false` + `-nostdinc++`, and they clash with
-  Apple's `<math.h>` (`FP_NAN` etc.). The proper fix requires either
-  a Zig patch that honors `link_libcpp = false` strictly, or wiring
-  the SDK's libc++ in a way that wins ordering.
-- **Android**: The NDK ships its own libc++ in `usr/include/c++/v1/`
-  that references `_LIBCPP_NODISCARD_EXT` without defining it
-  anywhere in the public headers — the NDK relies on its own clang
-  to supply the macro via builtins. Zig's bundled clang doesn't, so
-  `<stdlib.h>` etc. fail to compile. Same root cause family as iOS:
-  Zig's clang and the platform's libc++ don't agree on what the
-  toolchain promises.
-
-The plumbing in this repo (the `-Dsysroot` option and `applySysroot`
-helper in `build.zig`) is ready for both targets — the moment Zig and
-the platform SDKs reconcile their libc++ expectations (or we ship NDK's
-own clang via something like `addSystemCommand`), uncomment the
-matrix rows in `.github/workflows/prebuilt.yml` and they should
-produce tarballs. PRs welcome.
+`applySysroot` in `build.zig` adds `<sysroot>/usr/include/c++/v1`,
+`<sysroot>/usr/include`, and `<sysroot>/usr/lib` to the include/lib
+search paths, plus an Android-specific
+`<sysroot>/usr/include/<triple>/` tier where the NDK keeps
+arch-specific headers. The wider toolchain compatibility issues
+described above still apply.
 
 ## Prebuilt downloads
 
@@ -172,8 +189,10 @@ Each `v0.YYYYMMDD.0` tag triggers
 per-target tarballs as assets on the corresponding GitHub Release:
 
 ```
-boringssl-v0.YYYYMMDD.0-linux-x86_64.tar.gz
-boringssl-v0.YYYYMMDD.0-linux-aarch64.tar.gz
+boringssl-v0.YYYYMMDD.0-linux-x86_64.tar.gz        (glibc)
+boringssl-v0.YYYYMMDD.0-linux-aarch64.tar.gz       (glibc)
+boringssl-v0.YYYYMMDD.0-linux-musl-x86_64.tar.gz   (musl; doubles as Android x86_64)
+boringssl-v0.YYYYMMDD.0-linux-musl-aarch64.tar.gz  (musl; doubles as Android aarch64)
 boringssl-v0.YYYYMMDD.0-macos-aarch64.tar.gz
 boringssl-v0.YYYYMMDD.0-windows-x86_64-gnu.tar.gz
 boringssl-v0.YYYYMMDD.0-windows-x86_64-msvc.tar.gz

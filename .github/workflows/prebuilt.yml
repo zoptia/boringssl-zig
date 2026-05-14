@@ -36,19 +36,15 @@ jobs:
           - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib }
           # Cross-only — wasm32-wasi.
           - { os: ubuntu-latest,    label: wasm32-wasi,          target: wasm32-wasi,          extra: "-Dasm=false", archive_ext: a   }
-          # Android intentionally NOT in this matrix yet:
-          # The NDK's bundled libc++ headers (r26d/r27c) reference
-          # _LIBCPP_NODISCARD_EXT but never define it under their own
-          # __config — the NDK relies on its own clang to supply the
-          # macro via builtins. Zig 0.16's clang doesn't do that, so
-          # every BoringSSL header that pulls in <stdlib.h> trips on
-          # "unknown type name _LIBCPP_NODISCARD_EXT". Plumbing
-          # (-Dsysroot + applySysroot in build.zig) is in place — when
-          # Zig and the NDK align on libc++ macros (or we wire in
-          # NDK's clang directly), uncomment the rows below.
-          #
-          # - { os: ubuntu-latest,    label: android-aarch64,      target: aarch64-linux-android, extra: "-Dasm=false", archive_ext: a, use_ndk: true }
-          # - { os: ubuntu-latest,    label: android-x86_64,       target: x86_64-linux-android,  extra: "-Dasm=false", archive_ext: a, use_ndk: true }
+          # musl static .a — works on Alpine, embedded Linux, and as
+          # an Android (Bionic) drop-in: the archive only references
+          # standard POSIX/C/pthread/operator-new symbols, all of
+          # which Bionic provides at ABI-equivalent calling
+          # conventions. We deliberately avoid the NDK because Zig's
+          # bundled clang and the NDK's libc++ headers can't agree on
+          # internal LIBCPP macros (see README-zig.md mobile section).
+          - { os: ubuntu-latest,    label: linux-musl-aarch64,   target: aarch64-linux-musl,   extra: "",            archive_ext: a   }
+          - { os: ubuntu-latest,    label: linux-musl-x86_64,    target: x86_64-linux-musl,    extra: "",            archive_ext: a   }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -70,29 +66,8 @@ jobs:
       - name: Show toolchain
         run: zig version
 
-      - name: Set up Android NDK
-        if: matrix.use_ndk
-        id: ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          # r27c's c++/v1 headers reference _LIBCPP_NODISCARD_EXT (a macro
-          # only conditionally defined under certain feature flags) which
-          # Zig's bundled clang doesn't activate. r26d's libc++ headers
-          # are happy with what Zig 0.16's clang provides.
-          ndk-version: r26d
-          add-to-path: false
-
-      - name: Resolve Android sysroot
-        if: matrix.use_ndk
-        shell: bash
-        run: |
-          SYSROOT="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          echo "Using sysroot: $SYSROOT"
-          ls "$SYSROOT/usr/include" >/dev/null  # sanity check
-          echo "ZIG_SYSROOT_FLAG=-Dsysroot=$SYSROOT" >> "$GITHUB_ENV"
-
       - name: Build (release)
-        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} ${{ env.ZIG_SYSROOT_FLAG }} -Doptimize=ReleaseFast
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} -Doptimize=ReleaseFast
 
       - name: Stage tarball contents
         # Use git-bash on Windows so the same shell snippet works everywhere.
