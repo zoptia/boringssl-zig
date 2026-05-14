@@ -81,6 +81,18 @@ jobs:
           ls "$SYSROOT/usr/include" >/dev/null  # sanity check
           echo "ZIG_SYSROOT_FLAG=-Dsysroot=$SYSROOT" >> "$GITHUB_ENV"
 
+          # Diagnostic — find where _LIBCPP_NODISCARD_EXT is supposed to come
+          # from in this NDK and dump the offending stdlib.h excerpt.
+          echo "=== grep _LIBCPP_NODISCARD_EXT in NDK headers ==="
+          grep -rn "define _LIBCPP_NODISCARD_EXT\|_LIBCPP_NODISCARD_EXT" \
+            "$SYSROOT/usr/include/c++/v1/" 2>/dev/null | head -20 || true
+
+          echo "=== stdlib.h around line 113 ==="
+          sed -n '100,130p' "$SYSROOT/usr/include/c++/v1/stdlib.h" || true
+
+          echo "=== c++/v1/__config head ==="
+          head -50 "$SYSROOT/usr/include/c++/v1/__config" 2>/dev/null || true
+
       - name: Build (release)
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} ${{ env.ZIG_SYSROOT_FLAG }} -Doptimize=ReleaseFast
 
