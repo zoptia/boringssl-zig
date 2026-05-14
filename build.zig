@@ -158,10 +158,13 @@ fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool, no_cxx_ru
         "-fvisibility=hidden",
         "-DBORINGSSL_IMPLEMENTATION",
     }) catch @panic("OOM");
-    // When -Dsysroot is in play, suppress Zig's auto-added libcxx headers so
-    // the SDK's libc++ (added via addSystemIncludePath in applySysroot) wins.
+    // When -Dsysroot is in play, suppress clang's default C++ stdlib include
+    // path so the SDK's libc++ (added via addSystemIncludePath in
+    // applySysroot) wins. We keep `-nostdlibinc` off because it would also
+    // strip clang's resource-dir builtins (stdarg.h, stddef.h, _LIBCPP
+    // helper macros), which the SDK's stdlib.h transitively needs.
     if (sysroot != null) {
-        list.appendSlice(b.allocator, &.{ "-nostdinc++", "-nostdlibinc" }) catch @panic("OOM");
+        list.append(b.allocator, "-nostdinc++") catch @panic("OOM");
     }
     // BoringSSL upstream CMake applies `-fno-exceptions -fno-rtti` only to the
     // crypto (bcm + libcrypto) target; ssl and pki are built with the default
