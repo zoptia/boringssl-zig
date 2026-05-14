@@ -1,0 +1,41 @@
+name: Sync upstream BoringSSL
+
+on:
+  schedule:
+    - cron: '0 10 * * 1'  # Mondays 10:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "boringssl-sync-bot"
+          git config user.email "bot@users.noreply.github.com"
+
+      - name: Sync upstream
+        id: sync
+        run: |
+          BRANCH="sync/upstream-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          ./scripts/sync-upstream.sh
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ${{ steps.sync.outputs.branch }}
+          title: "chore: sync upstream BoringSSL"
+          body: |
+            Automated weekly sync of `google/boringssl@main` via
+            `git subtree pull --squash`. CI on this PR validates the new
+            upstream still builds.
+          delete-branch: true

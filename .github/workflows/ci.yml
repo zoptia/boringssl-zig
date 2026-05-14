@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: master
+
+      - name: Native build + smoke test
+        run: zig build test
+
+      - name: Cross-compile aarch64-linux
+        if: matrix.os == 'ubuntu-latest'
+        run: zig build -Dtarget=aarch64-linux-gnu
+
+      - name: Cross-compile x86_64-linux (asm on)
+        if: matrix.os == 'macos-latest'
+        run: zig build -Dtarget=x86_64-linux-gnu
+
+      - name: Cross-compile wasm32-wasi (asm off)
+        run: zig build -Dtarget=wasm32-wasi -Dasm=false
+
+      - name: Cross-compile x86_64-windows (asm off)
+        run: zig build -Dtarget=x86_64-windows-gnu -Dasm=false

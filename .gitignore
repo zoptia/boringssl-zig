@@ -39,3 +39,7 @@
 /.vscode/
 /.cache/
 /dist/
+
+# boringssl-zig build outputs
+zig-out/
+.zig-cache/

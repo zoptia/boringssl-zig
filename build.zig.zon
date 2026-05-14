@@ -1,0 +1,28 @@
+.{
+    .name = .boringssl,
+    .version = "0.20260513.0",
+    .fingerprint = 0x5f0947d2fdae1327,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        // boringssl-zig additions
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "scripts",
+        "tests",
+        "LICENSE-zig",
+        "README-zig.md",
+        "CLAUDE.md",
+        // BoringSSL upstream tree (only the dirs the build actually needs)
+        "include",
+        "crypto",
+        "ssl",
+        "pki",
+        "gen",
+        "third_party",
+        // Upstream legal / attribution
+        "LICENSE",
+        "AUTHORS",
+    },
+}
