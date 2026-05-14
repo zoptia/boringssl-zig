@@ -5,9 +5,9 @@ on:
     branches: [main]
   pull_request:
 
-# Strategy: each natively-supported platform has its own runner that does
-# `zig build test` (native build + native smoke run). Targets without a
-# matching runner (wasm, ARM Windows) are cross-compiled on Linux as a
+# Strategy: each natively-supported platform/ABI has its own runner that
+# does `zig build test` (native build + native smoke run). Targets without
+# a matching runner (wasm, ARM Windows) are cross-compiled on Linux as a
 # build-only check.
 
 jobs:
@@ -17,26 +17,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    label: linux-x86_64   }
-          - { os: ubuntu-24.04-arm, label: linux-aarch64  }
-          - { os: macos-latest,     label: macos-aarch64  }
-          - { os: macos-13,         label: macos-x86_64   }
+          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: ""            }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: ""            }
+          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: ""            }
+          - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false" }
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig via zvk
+      - name: Install Zig via zvk (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
         # zvk's install.sh edits the user's shell rc, which GitHub Actions
         # doesn't pick up across steps; re-publish bin dir to GITHUB_PATH.
         run: |
           curl -fsSL https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.sh | sh
           echo "$HOME/.zoptia/zig/bin" >> "$GITHUB_PATH"
 
+      - name: Install Zig via zvk (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.ps1 | iex
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.zoptia\zig\bin"
+
       - name: Show toolchain
         run: zig version
 
       - name: Native build + smoke test
-        run: zig build test
+        # Windows runners get -Dasm=false because the perlasm output for x86/
+        # x86_64 is in NASM syntax and Zig does not bundle NASM. Add a
+        # `choco install -y nasm` step before this if you want to validate
+        # the asm path on Windows too.
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} test
 
   cross:
     name: cross ${{ matrix.target }}
@@ -44,9 +59,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: wasm32-wasi,        extra: "-Dasm=false" }
-          - { target: x86_64-windows-gnu, extra: "-Dasm=false" }
-          - { target: aarch64-windows-gnu, extra: ""           }
+          - { target: wasm32-wasi,         extra: "-Dasm=false" }
+          - { target: aarch64-windows-gnu, extra: ""            }   # no ARM Windows runner yet
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
