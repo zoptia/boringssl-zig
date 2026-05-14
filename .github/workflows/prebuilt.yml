@@ -36,9 +36,19 @@ jobs:
           - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib }
           # Cross-only — wasm32-wasi.
           - { os: ubuntu-latest,    label: wasm32-wasi,          target: wasm32-wasi,          extra: "-Dasm=false", archive_ext: a   }
-          # Android (NDK provides the sysroot incl. libc++, so we pass it via -Dsysroot).
-          - { os: ubuntu-latest,    label: android-aarch64,      target: aarch64-linux-android, extra: "-Dasm=false", archive_ext: a, use_ndk: true }
-          - { os: ubuntu-latest,    label: android-x86_64,       target: x86_64-linux-android,  extra: "-Dasm=false", archive_ext: a, use_ndk: true }
+          # Android intentionally NOT in this matrix yet:
+          # The NDK's bundled libc++ headers (r26d/r27c) reference
+          # _LIBCPP_NODISCARD_EXT but never define it under their own
+          # __config — the NDK relies on its own clang to supply the
+          # macro via builtins. Zig 0.16's clang doesn't do that, so
+          # every BoringSSL header that pulls in <stdlib.h> trips on
+          # "unknown type name _LIBCPP_NODISCARD_EXT". Plumbing
+          # (-Dsysroot + applySysroot in build.zig) is in place — when
+          # Zig and the NDK align on libc++ macros (or we wire in
+          # NDK's clang directly), uncomment the rows below.
+          #
+          # - { os: ubuntu-latest,    label: android-aarch64,      target: aarch64-linux-android, extra: "-Dasm=false", archive_ext: a, use_ndk: true }
+          # - { os: ubuntu-latest,    label: android-x86_64,       target: x86_64-linux-android,  extra: "-Dasm=false", archive_ext: a, use_ndk: true }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -80,18 +90,6 @@ jobs:
           echo "Using sysroot: $SYSROOT"
           ls "$SYSROOT/usr/include" >/dev/null  # sanity check
           echo "ZIG_SYSROOT_FLAG=-Dsysroot=$SYSROOT" >> "$GITHUB_ENV"
-
-          # Diagnostic — find where _LIBCPP_NODISCARD_EXT is supposed to come
-          # from in this NDK and dump the offending stdlib.h excerpt.
-          echo "=== grep _LIBCPP_NODISCARD_EXT in NDK headers ==="
-          grep -rn "define _LIBCPP_NODISCARD_EXT\|_LIBCPP_NODISCARD_EXT" \
-            "$SYSROOT/usr/include/c++/v1/" 2>/dev/null | head -20 || true
-
-          echo "=== stdlib.h around line 113 ==="
-          sed -n '100,130p' "$SYSROOT/usr/include/c++/v1/stdlib.h" || true
-
-          echo "=== c++/v1/__config head ==="
-          head -50 "$SYSROOT/usr/include/c++/v1/__config" 2>/dev/null || true
 
       - name: Build (release)
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} ${{ env.ZIG_SYSROOT_FLAG }} -Doptimize=ReleaseFast

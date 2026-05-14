@@ -144,18 +144,26 @@ zig build -Dtarget=aarch64-linux-android \
 
 **Caveats — these targets are not yet officially supported:**
 
-- **iOS**: `-Dsysroot` gets you past the C header lookup, but Zig's
-  bundled libc++ then clashes with Apple's `<math.h>` from the SDK
-  (Zig's libcxx headers reference `FP_NAN` etc. that the SDK provides
-  through a different macro path). The proper fix is to disable Zig's
-  libc++ on Darwin embedded targets and link Apple's `libc++` from the
-  SDK instead — open work.
-- **Android**: Less tested, but the NDK ships a complete sysroot incl.
-  libc++, so this path is more likely to work end-to-end. We just
-  haven't wired up an NDK install in CI yet.
+- **iOS**: `-Dsysroot` gets you past the C header lookup, but Zig
+  0.16/0.17's bundled libc++ headers re-emerge on the include path
+  even with `link_libcpp = false` + `-nostdinc++`, and they clash with
+  Apple's `<math.h>` (`FP_NAN` etc.). The proper fix requires either
+  a Zig patch that honors `link_libcpp = false` strictly, or wiring
+  the SDK's libc++ in a way that wins ordering.
+- **Android**: The NDK ships its own libc++ in `usr/include/c++/v1/`
+  that references `_LIBCPP_NODISCARD_EXT` without defining it
+  anywhere in the public headers — the NDK relies on its own clang
+  to supply the macro via builtins. Zig's bundled clang doesn't, so
+  `<stdlib.h>` etc. fail to compile. Same root cause family as iOS:
+  Zig's clang and the platform's libc++ don't agree on what the
+  toolchain promises.
 
-If you get either path working, a PR would be welcome. Otherwise, these
-targets are not in the per-release prebuilt tarballs.
+The plumbing in this repo (the `-Dsysroot` option and `applySysroot`
+helper in `build.zig`) is ready for both targets — the moment Zig and
+the platform SDKs reconcile their libc++ expectations (or we ship NDK's
+own clang via something like `addSystemCommand`), uncomment the
+matrix rows in `.github/workflows/prebuilt.yml` and they should
+produce tarballs. PRs welcome.
 
 ## Prebuilt downloads
 
