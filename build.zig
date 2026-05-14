@@ -223,6 +223,14 @@ pub fn build(b: *std.Build) void {
             "instead of compiling from source. Useful for caching, system installs, " ++
             "or testing a patched build.",
     );
+    const sysroot = b.option(
+        []const u8,
+        "sysroot",
+        "SDK sysroot for targets where Zig doesn't bundle libc/headers — iOS " ++
+            "(xcrun --sdk iphoneos --show-sdk-path) or Android NDK " ++
+            "(<NDK>/toolchains/llvm/prebuilt/<host>/sysroot). " ++
+            "Ignored when -Dprefix is used.",
+    );
 
     var sources = parseSources(b.allocator) catch |err| {
         std.debug.panic("failed to parse gen/sources.json: {t}", .{err});
@@ -232,7 +240,7 @@ pub fn build(b: *std.Build) void {
     const libs = if (prefix) |p|
         buildFromPrefix(b, target, optimize, p)
     else
-        buildFromSource(b, target, optimize, enable_asm, &sources);
+        buildFromSource(b, target, optimize, enable_asm, sysroot, &sources);
 
     // -------- public Zig wrapper module --------
     //
@@ -282,9 +290,22 @@ fn buildFromSource(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     enable_asm: bool,
+    sysroot: ?[]const u8,
     sources: *Sources,
 ) Libs {
     const t = target.result;
+    // Helper: when -Dsysroot is set, point system include + lib search at it.
+    // Used for iOS (Xcode SDK) and Android (NDK sysroot) where Zig has no
+    // bundled libc/libc++ for the target.
+    const applySysroot = struct {
+        fn apply(mod: *std.Build.Module, sr: ?[]const u8, bb: *std.Build) void {
+            const s = sr orelse return;
+            // Order matters — c++/v1 first so libc++ headers shadow libc's.
+            mod.addSystemIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/include/c++/v1" }) });
+            mod.addSystemIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/include" }) });
+            mod.addLibraryPath(.{ .cwd_relative = bb.pathJoin(&.{ s, "usr/lib" }) });
+        }
+    }.apply;
     const is_win_x86_family = t.os.tag == .windows and (t.cpu.arch == .x86 or t.cpu.arch == .x86_64);
     const use_nasm = enable_asm and is_win_x86_family;
     // crypto (incl. bcm) is built with -fno-rtti -fno-exceptions to match
@@ -300,6 +321,7 @@ fn buildFromSource(
         .link_libc = true,
         .link_libcpp = true,
     });
+    applySysroot(crypto_mod, sysroot, b);
     crypto_mod.addIncludePath(b.path("include"));
     crypto_mod.addCSourceFiles(.{
         .files = sources.crypto.srcs,
@@ -352,6 +374,7 @@ fn buildFromSource(
         .link_libc = true,
         .link_libcpp = true,
     });
+    applySysroot(ssl_mod, sysroot, b);
     ssl_mod.addIncludePath(b.path("include"));
     ssl_mod.addCSourceFiles(.{
         .files = sources.ssl.srcs,
@@ -375,6 +398,7 @@ fn buildFromSource(
             .link_libc = true,
             .link_libcpp = true,
         });
+        applySysroot(pki_mod, sysroot, b);
         pki_mod.addIncludePath(b.path("include"));
         var pki_flags: std.ArrayList([]const u8) = .empty;
         pki_flags.appendSlice(b.allocator, ssl_pki_cflags) catch @panic("OOM");

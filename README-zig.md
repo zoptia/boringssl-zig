@@ -124,22 +124,38 @@ not run the smoke test there. C/C++ consumers using `cl.exe`/`link.exe`
 do **not** hit this — they link the `.lib` files with the MSVC C++
 runtime, which is what BoringSSL was designed for on Windows.
 
-### Mobile platform support (iOS, Android)
+### Mobile platform support (iOS, Android) — experimental
 
-Zig 0.16/0.17 does not bundle the iOS SDK or Android NDK, so source-mode
-cross-compilation to `aarch64-ios` or `aarch64-linux-android` fails on
-the very first BoringSSL header (`assert.h`, `sys/types.h` not found).
+Zig 0.16/0.17 doesn't bundle the iOS SDK or Android NDK, so source-mode
+cross-compilation to `aarch64-ios` or `aarch64-linux-android` fails by
+default with `'assert.h' file not found`.
 
-Two options if you need mobile:
+There's a `-Dsysroot=<path>` flag you can point at an installed SDK:
 
-1. **Bring your own SDK.** Build with `zig cc` flags pointing at
-   `xcrun --sdk iphoneos --show-sdk-path` (iOS) or your Android NDK
-   sysroot, then feed the resulting `.a` back through `-Dprefix=<path>`.
-   We don't expose this in `build.zig` directly because the SDK paths
-   are environment-specific.
-2. **Wait for prebuilt artifacts.** A future release will include
-   `aarch64-ios` and `aarch64-linux-android` tarballs built on CI
-   runners that have the SDK installed.
+```sh
+# iOS (needs Xcode on a macOS host)
+SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+zig build -Dtarget=aarch64-ios -Dsysroot="$SDK"
+
+# Android
+zig build -Dtarget=aarch64-linux-android \
+  -Dsysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/<host>/sysroot
+```
+
+**Caveats — these targets are not yet officially supported:**
+
+- **iOS**: `-Dsysroot` gets you past the C header lookup, but Zig's
+  bundled libc++ then clashes with Apple's `<math.h>` from the SDK
+  (Zig's libcxx headers reference `FP_NAN` etc. that the SDK provides
+  through a different macro path). The proper fix is to disable Zig's
+  libc++ on Darwin embedded targets and link Apple's `libc++` from the
+  SDK instead — open work.
+- **Android**: Less tested, but the NDK ships a complete sysroot incl.
+  libc++, so this path is more likely to work end-to-end. We just
+  haven't wired up an NDK install in CI yet.
+
+If you get either path working, a PR would be welcome. Otherwise, these
+targets are not in the per-release prebuilt tarballs.
 
 ## Prebuilt downloads
 
