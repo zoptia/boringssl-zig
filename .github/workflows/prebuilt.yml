@@ -61,17 +61,21 @@ jobs:
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} -Doptimize=ReleaseFast
 
       - name: Stage tarball contents
+        # Use git-bash on Windows so the same shell snippet works everywhere.
+        # `shasum` doesn't exist on Windows runners, so the SHA256 line is
+        # computed with python (always available) in the form
+        # `<hash>  <filename>` so it concatenates cleanly into SHA256SUMS.
         shell: bash
         run: |
           set -euxo pipefail
           STAGE="boringssl-${RELEASE_TAG}-${{ matrix.label }}"
           mkdir -p "$STAGE/lib" "$STAGE/include"
-          # Copy whatever lib<name>.{a,lib} / <name>.lib zig-out produced.
           cp zig-out/lib/* "$STAGE/lib/"
           cp -R zig-out/include/openssl "$STAGE/include/"
           tar czf "${STAGE}.tar.gz" "$STAGE"
-          shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
-          ls -lh "${STAGE}.tar.gz" "${STAGE}.tar.gz.sha256"
+          python -c "import hashlib,sys; f=sys.argv[1]; h=hashlib.sha256(open(f,'rb').read()).hexdigest(); print(f'{h}  {f}')" \
+            "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          ls -l "${STAGE}.tar.gz" "${STAGE}.tar.gz.sha256"
 
       - name: Upload artifact for collect job
         uses: actions/upload-artifact@v4
