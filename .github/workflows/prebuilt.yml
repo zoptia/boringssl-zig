@@ -65,7 +65,11 @@ jobs:
         id: ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27c
+          # r27c's c++/v1 headers reference _LIBCPP_NODISCARD_EXT (a macro
+          # only conditionally defined under certain feature flags) which
+          # Zig's bundled clang doesn't activate. r26d's libc++ headers
+          # are happy with what Zig 0.16's clang provides.
+          ndk-version: r26d
           add-to-path: false
 
       - name: Resolve Android sysroot
