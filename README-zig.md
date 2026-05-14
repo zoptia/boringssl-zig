@@ -31,15 +31,16 @@ const boringssl = b.dependency("boringssl", .{
     .optimize = optimize,
 });
 
-const exe = b.addExecutable(.{
-    .name = "myapp",
-    .root_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    }),
+const exe_mod = b.createModule(.{
+    .root_source_file = b.path("src/main.zig"),
+    .target = target,
+    .optimize = optimize,
+    .link_libc = true,
 });
+// Make `@import("boringssl")` resolve to our wrapper module.
+exe_mod.addImport("boringssl", boringssl.module("boringssl"));
+
+const exe = b.addExecutable(.{ .name = "myapp", .root_module = exe_mod });
 exe.linkLibrary(boringssl.artifact("ssl"));     // pulls in libcrypto too
 // Headers under <openssl/...> are now visible — no extra addIncludePath needed.
 ```
@@ -47,7 +48,7 @@ exe.linkLibrary(boringssl.artifact("ssl"));     // pulls in libcrypto too
 If you want only `libcrypto`, link `boringssl.artifact("crypto")` instead. A
 third artifact, `pki`, is also available.
 
-A minimal Zig wrapper module is exposed under the name `boringssl`:
+The wrapper module gives you:
 
 ```zig
 const bssl = @import("boringssl");
@@ -79,7 +80,33 @@ Other Zig targets should generally work; please open an issue if not.
 | `-Dtarget=<triple>` | host | Standard Zig cross target |
 | `-Doptimize=<mode>` | Debug | ReleaseFast / ReleaseSafe / ReleaseSmall |
 | `-Dasm=true\|false` | `true` | Include perlasm-generated assembly |
+| `-Dprefix=<path>` | (none) | Skip source compilation; use prebuilt libs at `<path>/lib` + headers at `<path>/include` |
 | `-Dfips=…` | (reserved) | FIPS module is not supported yet |
+
+#### `-Dprefix` for cached / system / patched builds
+
+If you already have `lib{crypto,ssl,pki}.a` (or `{crypto,ssl,pki}.lib` on
+MSVC) and `include/openssl/*.h` somewhere on disk, point `-Dprefix=<path>`
+at the parent directory and the build will skip compiling BoringSSL
+entirely — it just re-exports the existing archives behind the same
+`b.dependency().artifact("ssl")` interface. Useful for:
+
+- Local caching (one slow source build, many fast incremental ones)
+- Pinning to a system-supplied or distro-supplied build
+- Linking against a patched BoringSSL you maintain elsewhere
+
+Layout expected at `<path>/`:
+
+```
+lib/
+  libcrypto.a   (or crypto.lib  on -windows-msvc)
+  libssl.a      (or ssl.lib     on -windows-msvc)
+  libpki.a      (or pki.lib     on -windows-msvc)
+include/openssl/*.h
+```
+
+Source mode and prefix mode produce the same `zig-out/` layout, so any
+downstream `build.zig` is identical for both.
 
 ### Windows note
 

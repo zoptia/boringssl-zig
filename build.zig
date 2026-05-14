@@ -174,13 +174,77 @@ const asm_flags: []const []const u8 = &.{
     "-DBORINGSSL_IMPLEMENTATION",
 };
 
+const Libs = struct {
+    crypto: *std.Build.Step.Compile,
+    ssl: *std.Build.Step.Compile,
+    pki: ?*std.Build.Step.Compile,
+};
+
+/// Resolve a path that may be absolute (user-supplied prefix) or relative
+/// (anything inside the package). `b.path` only accepts relative paths.
+fn lazyPath(b: *std.Build, p: []const u8) std.Build.LazyPath {
+    if (std.fs.path.isAbsolute(p)) return .{ .cwd_relative = b.dupe(p) };
+    return b.path(p);
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const enable_asm = b.option(bool, "asm", "Include perlasm-generated assembly (default: true)") orelse true;
     _ = b.option(bool, "fips", "Reserved: enable FIPS module build (not yet supported)") orelse false;
+    const prefix = b.option(
+        []const u8,
+        "prefix",
+        "Use prebuilt libcrypto/libssl/libpki from <path>/lib + <path>/include " ++
+            "instead of compiling from source. Useful for caching, system installs, " ++
+            "or testing a patched build.",
+    );
 
+    const libs = if (prefix) |p|
+        buildFromPrefix(b, target, optimize, p)
+    else
+        buildFromSource(b, target, optimize, enable_asm);
+
+    // -------- public Zig wrapper module --------
+    //
+    // BoringSSL's headers cannot be reliably translated by `zig translate-c`
+    // (the macro-heavy DEFINE_STACK_OF defeats the C importer). The wrapper
+    // therefore exposes only hand-written extern declarations — see
+    // src/root.zig — and consumers add more as they need them.
+    const mod = b.addModule("boringssl", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    mod.linkLibrary(libs.ssl);
+
+    // -------- smoke test --------
+    const smoke_mod = b.createModule(.{
+        .root_source_file = b.path("tests/smoke.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    smoke_mod.addImport("boringssl", mod);
+    const smoke = b.addExecutable(.{
+        .name = "smoke",
+        .root_module = smoke_mod,
+    });
+
+    const run_smoke = b.addRunArtifact(smoke);
+    const test_step = b.step("test", "Build, install, and run the smoke test");
+    test_step.dependOn(b.getInstallStep());
+    test_step.dependOn(&run_smoke.step);
+}
+
+fn buildFromSource(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    enable_asm: bool,
+) Libs {
     var sources = parseSources(b.allocator) catch |err| {
         std.debug.panic("failed to parse gen/sources.json: {t}", .{err});
     };
@@ -200,12 +264,12 @@ pub fn build(b: *std.Build) void {
     });
     crypto_mod.addIncludePath(b.path("include"));
     crypto_mod.addCSourceFiles(.{
-.files = sources.crypto.srcs,
+        .files = sources.crypto.srcs,
         .flags = cflags,
         .language = .cpp,
     });
     crypto_mod.addCSourceFiles(.{
-.files = sources.bcm.srcs,
+        .files = sources.bcm.srcs,
         .flags = cflags,
         .language = .cpp,
     });
@@ -218,7 +282,7 @@ pub fn build(b: *std.Build) void {
                 addNasmObjects(b, crypto_mod, target, asm_list.items);
             } else {
                 crypto_mod.addCSourceFiles(.{
-                        .files = asm_list.items,
+                    .files = asm_list.items,
                     .flags = asm_flags,
                     .language = .assembly_with_preprocessor,
                 });
@@ -252,7 +316,7 @@ pub fn build(b: *std.Build) void {
     });
     ssl_mod.addIncludePath(b.path("include"));
     ssl_mod.addCSourceFiles(.{
-.files = sources.ssl.srcs,
+        .files = sources.ssl.srcs,
         .flags = cflags,
         .language = .cpp,
     });
@@ -265,6 +329,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(ssl_lib);
 
     // -------- libpki (optional, present in current upstream) --------
+    var pki_lib_opt: ?*std.Build.Step.Compile = null;
     if (sources.pki.srcs.len > 0) {
         const pki_mod = b.createModule(.{
             .target = target,
@@ -277,7 +342,7 @@ pub fn build(b: *std.Build) void {
         pki_flags.appendSlice(b.allocator, cflags) catch @panic("OOM");
         if (t.os.tag.isDarwin()) pki_flags.append(b.allocator, "-fno-aligned-new") catch @panic("OOM");
         pki_mod.addCSourceFiles(.{
-        .files = sources.pki.srcs,
+            .files = sources.pki.srcs,
             .flags = pki_flags.items,
             .language = .cpp,
         });
@@ -288,39 +353,73 @@ pub fn build(b: *std.Build) void {
             .root_module = pki_mod,
         });
         b.installArtifact(pki_lib);
+        pki_lib_opt = pki_lib;
     }
 
-    // -------- public Zig wrapper module --------
-    //
-    // BoringSSL's headers cannot be reliably translated by `zig translate-c`
-    // (the macro-heavy DEFINE_STACK_OF defeats the C importer). The wrapper
-    // therefore exposes only hand-written extern declarations — see
-    // src/root.zig — and consumers add more as they need them.
-    const mod = b.addModule("boringssl", .{
-        .root_source_file = b.path("src/root.zig"),
+    return .{ .crypto = crypto_lib, .ssl = ssl_lib, .pki = pki_lib_opt };
+}
+
+/// Build "libraries" that just re-export prebuilt archives from a user-supplied
+/// install prefix. Layout expected at `<prefix>/`:
+///   lib/lib{crypto,ssl,pki}.a       (Unix / MinGW)
+///   lib/{crypto,ssl,pki}.lib        (MSVC)
+///   include/openssl/*.h
+fn buildFromPrefix(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    prefix: []const u8,
+) Libs {
+    const t = target.result;
+    const inc = lazyPath(b, b.pathJoin(&.{ prefix, "include" }));
+
+    const crypto = wrapPrebuiltLib(b, "crypto", target, optimize, prefix, inc);
+    if (t.os.tag == .windows) {
+        crypto.root_module.linkSystemLibrary("ws2_32", .{});
+        crypto.root_module.linkSystemLibrary("advapi32", .{});
+    }
+    crypto.installHeadersDirectory(inc, "", .{ .include_extensions = &.{".h"} });
+    b.installArtifact(crypto);
+
+    const ssl = wrapPrebuiltLib(b, "ssl", target, optimize, prefix, inc);
+    ssl.root_module.linkLibrary(crypto);
+    b.installArtifact(ssl);
+
+    const pki = wrapPrebuiltLib(b, "pki", target, optimize, prefix, inc);
+    pki.root_module.linkLibrary(crypto);
+    b.installArtifact(pki);
+
+    return .{ .crypto = crypto, .ssl = ssl, .pki = pki };
+}
+
+fn wrapPrebuiltLib(
+    b: *std.Build,
+    name: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    prefix: []const u8,
+    include_path: std.Build.LazyPath,
+) *std.Build.Step.Compile {
+    const t = target.result;
+    const archive_basename = if (t.os.tag == .windows and t.abi == .msvc)
+        b.fmt("{s}.lib", .{name})
+    else
+        b.fmt("lib{s}.a", .{name});
+    const archive = lazyPath(b, b.pathJoin(&.{ prefix, "lib", archive_basename }));
+
+    const mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .link_libcpp = true,
     });
-    mod.linkLibrary(ssl_lib);
-
-    // -------- smoke test --------
-    const smoke_mod = b.createModule(.{
-        .root_source_file = b.path("tests/smoke.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
+    mod.addObjectFile(archive);
+    mod.addIncludePath(include_path);
+    return b.addLibrary(.{
+        .name = name,
+        .linkage = .static,
+        .root_module = mod,
     });
-    smoke_mod.addImport("boringssl", mod);
-    const smoke = b.addExecutable(.{
-        .name = "smoke",
-        .root_module = smoke_mod,
-    });
-
-    const run_smoke = b.addRunArtifact(smoke);
-    const test_step = b.step("test", "Build, install, and run the smoke test");
-    test_step.dependOn(b.getInstallStep());
-    test_step.dependOn(&run_smoke.step);
 }
 
 fn addNasmObjects(

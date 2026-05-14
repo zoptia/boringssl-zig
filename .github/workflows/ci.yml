@@ -43,6 +43,17 @@ jobs:
           irm https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.ps1 | iex
           Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.zoptia\zig\bin"
 
+          # Diagnostics — keep until we've seen a green CI run on Windows.
+          # zvk's actual install path on Windows isn't documented; if PATH
+          # ends up wrong, this output tells us where things really landed.
+          Write-Host "=== zvk install layout under $env:USERPROFILE\.zoptia ==="
+          if (Test-Path "$env:USERPROFILE\.zoptia") {
+            Get-ChildItem "$env:USERPROFILE\.zoptia" -Recurse -Filter *.exe `
+              -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table -AutoSize
+          } else {
+            Write-Host "(directory does not exist)"
+          }
+
       - name: Show toolchain
         run: zig version
 
