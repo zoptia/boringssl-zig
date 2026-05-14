@@ -34,6 +34,12 @@ jobs:
           - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            archive_ext: a   }
           - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a   }
           - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib }
+          # Cross-only — no native ARM Windows hosted runner on GitHub yet,
+          # but the GAS-format .S files compile fine without NASM so we can
+          # cross-build from Linux. MSVC variant of ARM Windows is omitted:
+          # cross-compiling -windows-msvc from non-Windows hosts fails to
+          # find advapi32 etc. (Zig doesn't bundle the MSVC SDK).
+          - { os: ubuntu-latest,    label: windows-aarch64-gnu,  target: aarch64-windows-gnu,  extra: "",            archive_ext: a   }
           # Cross-only — wasm32-wasi.
           - { os: ubuntu-latest,    label: wasm32-wasi,          target: wasm32-wasi,          extra: "-Dasm=false", archive_ext: a   }
           # musl static .a — works on Alpine, embedded Linux, and as

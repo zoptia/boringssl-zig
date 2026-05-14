@@ -196,6 +196,7 @@ boringssl-v0.YYYYMMDD.0-linux-musl-aarch64.tar.gz  (musl; doubles as Android aar
 boringssl-v0.YYYYMMDD.0-macos-aarch64.tar.gz
 boringssl-v0.YYYYMMDD.0-windows-x86_64-gnu.tar.gz
 boringssl-v0.YYYYMMDD.0-windows-x86_64-msvc.tar.gz
+boringssl-v0.YYYYMMDD.0-windows-aarch64-gnu.tar.gz   (mingw ABI; MSVC ARM not yet, no runner)
 boringssl-v0.YYYYMMDD.0-wasm32-wasi.tar.gz
 SHA256SUMS
 ```
