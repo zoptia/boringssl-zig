@@ -5,21 +5,29 @@ on:
     branches: [main]
   pull_request:
 
+# Strategy: each natively-supported platform has its own runner that does
+# `zig build test` (native build + native smoke run). Targets without a
+# matching runner (wasm, ARM Windows) are cross-compiled on Linux as a
+# build-only check.
+
 jobs:
-  build:
+  native:
+    name: native ${{ matrix.label }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - { os: ubuntu-latest,    label: linux-x86_64   }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64  }
+          - { os: macos-latest,     label: macos-aarch64  }
+          - { os: macos-13,         label: macos-x86_64   }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Zig via zvk
-        # zvk's install.sh modifies ~/.profile / ~/.zshrc for the user's
-        # interactive shells; GitHub Actions runs each step in a fresh
-        # non-interactive shell, so we re-publish the bin dir to $GITHUB_PATH
-        # ourselves to make `zig` visible in subsequent steps.
+        # zvk's install.sh edits the user's shell rc, which GitHub Actions
+        # doesn't pick up across steps; re-publish bin dir to GITHUB_PATH.
         run: |
           curl -fsSL https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.sh | sh
           echo "$HOME/.zoptia/zig/bin" >> "$GITHUB_PATH"
@@ -30,16 +38,23 @@ jobs:
       - name: Native build + smoke test
         run: zig build test
 
-      - name: Cross-compile aarch64-linux
-        if: matrix.os == 'ubuntu-latest'
-        run: zig build -Dtarget=aarch64-linux-gnu
+  cross:
+    name: cross ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: wasm32-wasi,        extra: "-Dasm=false" }
+          - { target: x86_64-windows-gnu, extra: "-Dasm=false" }
+          - { target: aarch64-windows-gnu, extra: ""           }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Cross-compile x86_64-linux (asm on)
-        if: matrix.os == 'macos-latest'
-        run: zig build -Dtarget=x86_64-linux-gnu
+      - name: Install Zig via zvk
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.sh | sh
+          echo "$HOME/.zoptia/zig/bin" >> "$GITHUB_PATH"
 
-      - name: Cross-compile wasm32-wasi (asm off)
-        run: zig build -Dtarget=wasm32-wasi -Dasm=false
-
-      - name: Cross-compile x86_64-windows (asm off)
-        run: zig build -Dtarget=x86_64-windows-gnu -Dasm=false
+      - name: Build only
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }}
