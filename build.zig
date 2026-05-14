@@ -33,6 +33,11 @@ const Sources = struct {
     crypto: SourceSet,
     ssl: SourceSet,
     pki: SourceSet,
+    test_support: SourceSet,
+    crypto_test: SourceSet,
+    ssl_test: SourceSet,
+    pki_test: SourceSet,
+    urandom_test: SourceSet,
 };
 
 fn parseSources(gpa: std.mem.Allocator) !Sources {
@@ -53,6 +58,11 @@ fn parseSources(gpa: std.mem.Allocator) !Sources {
         crypto: ?Group = null,
         ssl: ?Group = null,
         pki: ?Group = null,
+        test_support: ?Group = null,
+        crypto_test: ?Group = null,
+        ssl_test: ?Group = null,
+        pki_test: ?Group = null,
+        urandom_test: ?Group = null,
     };
 
     const parsed = try std.json.parseFromSliceLeaky(
@@ -79,6 +89,11 @@ fn parseSources(gpa: std.mem.Allocator) !Sources {
         .crypto = conv.pick(parsed.crypto),
         .ssl = conv.pick(parsed.ssl),
         .pki = conv.pick(parsed.pki),
+        .test_support = conv.pick(parsed.test_support),
+        .crypto_test = conv.pick(parsed.crypto_test),
+        .ssl_test = conv.pick(parsed.ssl_test),
+        .pki_test = conv.pick(parsed.pki_test),
+        .urandom_test = conv.pick(parsed.urandom_test),
     };
 }
 
@@ -134,7 +149,7 @@ fn collectAsm(
     return list;
 }
 
-fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool) []const []const u8 {
+fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool, no_cxx_runtime: bool) []const []const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     list.appendSlice(b.allocator, &.{
         "-std=c++17",
@@ -142,6 +157,14 @@ fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool) []const [
         "-fno-common",
         "-fvisibility=hidden",
         "-DBORINGSSL_IMPLEMENTATION",
+    }) catch @panic("OOM");
+    // BoringSSL upstream CMake applies `-fno-exceptions -fno-rtti` only to the
+    // crypto (bcm + libcrypto) target; ssl and pki are built with the default
+    // C++ runtime so their classes emit typeinfo. Mirroring that matters when
+    // test binaries inherit from ssl/pki classes (e.g. pki_test extending
+    // bssl::SimplePathBuilderDelegate) — the derived typeinfo needs the base
+    // typeinfo to exist.
+    if (no_cxx_runtime) list.appendSlice(b.allocator, &.{
         "-fno-exceptions",
         "-fno-rtti",
     }) catch @panic("OOM");
@@ -201,10 +224,15 @@ pub fn build(b: *std.Build) void {
             "or testing a patched build.",
     );
 
+    var sources = parseSources(b.allocator) catch |err| {
+        std.debug.panic("failed to parse gen/sources.json: {t}", .{err});
+    };
+    _ = &sources;
+
     const libs = if (prefix) |p|
         buildFromPrefix(b, target, optimize, p)
     else
-        buildFromSource(b, target, optimize, enable_asm);
+        buildFromSource(b, target, optimize, enable_asm, &sources);
 
     // -------- public Zig wrapper module --------
     //
@@ -237,6 +265,16 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Build, install, and run the smoke test");
     test_step.dependOn(b.getInstallStep());
     test_step.dependOn(&run_smoke.step);
+
+    // -------- BoringSSL upstream C++ test suite --------
+    //
+    // Only available in source mode (test_support / *_test sources live in the
+    // upstream tree, not in any prefix install). Builds gtest, test_support,
+    // then four test binaries (crypto/ssl/pki/urandom) linked against our
+    // freshly-built .a's. Run them all via `zig build test-all`.
+    if (prefix == null) {
+        addUpstreamTests(b, target, optimize, enable_asm, &sources, libs);
+    }
 }
 
 fn buildFromSource(
@@ -244,16 +282,16 @@ fn buildFromSource(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     enable_asm: bool,
+    sources: *Sources,
 ) Libs {
-    var sources = parseSources(b.allocator) catch |err| {
-        std.debug.panic("failed to parse gen/sources.json: {t}", .{err});
-    };
-    _ = &sources;
-
     const t = target.result;
     const is_win_x86_family = t.os.tag == .windows and (t.cpu.arch == .x86 or t.cpu.arch == .x86_64);
     const use_nasm = enable_asm and is_win_x86_family;
-    const cflags = baseCxxFlags(b, t, !enable_asm);
+    // crypto (incl. bcm) is built with -fno-rtti -fno-exceptions to match
+    // upstream. ssl and pki use a separate cflag set without those, so their
+    // typeinfo gets emitted (test binaries depend on this).
+    const crypto_cflags = baseCxxFlags(b, t, !enable_asm, true);
+    const ssl_pki_cflags = baseCxxFlags(b, t, !enable_asm, false);
 
     // -------- libcrypto --------
     const crypto_mod = b.createModule(.{
@@ -265,12 +303,12 @@ fn buildFromSource(
     crypto_mod.addIncludePath(b.path("include"));
     crypto_mod.addCSourceFiles(.{
         .files = sources.crypto.srcs,
-        .flags = cflags,
+        .flags = crypto_cflags,
         .language = .cpp,
     });
     crypto_mod.addCSourceFiles(.{
         .files = sources.bcm.srcs,
-        .flags = cflags,
+        .flags = crypto_cflags,
         .language = .cpp,
     });
 
@@ -317,7 +355,7 @@ fn buildFromSource(
     ssl_mod.addIncludePath(b.path("include"));
     ssl_mod.addCSourceFiles(.{
         .files = sources.ssl.srcs,
-        .flags = cflags,
+        .flags = ssl_pki_cflags,
         .language = .cpp,
     });
     ssl_mod.linkLibrary(crypto_lib);
@@ -339,7 +377,7 @@ fn buildFromSource(
         });
         pki_mod.addIncludePath(b.path("include"));
         var pki_flags: std.ArrayList([]const u8) = .empty;
-        pki_flags.appendSlice(b.allocator, cflags) catch @panic("OOM");
+        pki_flags.appendSlice(b.allocator, ssl_pki_cflags) catch @panic("OOM");
         if (t.os.tag.isDarwin()) pki_flags.append(b.allocator, "-fno-aligned-new") catch @panic("OOM");
         pki_mod.addCSourceFiles(.{
             .files = sources.pki.srcs,
@@ -447,4 +485,219 @@ fn addNasmObjects(
         run.addFileArg(src);
         mod.addObjectFile(obj);
     }
+}
+
+// =============================================================================
+// Upstream BoringSSL C++ test suite
+// =============================================================================
+//
+// gtest is vendored under third_party/googletest/. test_support, crypto_test,
+// ssl_test, pki_test, urandom_test sources come from sources.json.
+//
+// The test code (unlike libcrypto/libssl/libpki) needs RTTI and exceptions
+// because gtest does. We therefore use a separate cflag set without the
+// -fno-rtti / -fno-exceptions BoringSSL builds itself with.
+
+/// sources.json may list both .cc (C++) and .c (C) sources for a test group,
+/// plus the occasional .c.inc / .h that is purely an #include fragment.
+/// Split them so each compiles with the right language flag.
+fn splitSourcesByLang(b: *std.Build, srcs: []const []const u8) struct {
+    cpp: []const []const u8,
+    c: []const []const u8,
+} {
+    var cpp: std.ArrayList([]const u8) = .empty;
+    var c: std.ArrayList([]const u8) = .empty;
+    for (srcs) |s| {
+        if (std.mem.endsWith(u8, s, ".cc")) {
+            cpp.append(b.allocator, s) catch @panic("OOM");
+        } else if (std.mem.endsWith(u8, s, ".c")) {
+            c.append(b.allocator, s) catch @panic("OOM");
+        }
+        // .c.inc / .h / etc. are include fragments; let them ride along
+        // implicitly via the .cc files that #include them.
+    }
+    return .{
+        .cpp = cpp.toOwnedSlice(b.allocator) catch @panic("OOM"),
+        .c = c.toOwnedSlice(b.allocator) catch @panic("OOM"),
+    };
+}
+
+fn baseTestCFlags(b: *std.Build, target: std.Target) []const []const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    list.appendSlice(b.allocator, &.{
+        "-std=c11",
+        "-fno-strict-aliasing",
+        "-fno-common",
+    }) catch @panic("OOM");
+    switch (target.os.tag) {
+        .windows => list.appendSlice(b.allocator, &.{
+            "-DWIN32_LEAN_AND_MEAN",
+            "-DNOMINMAX",
+            "-D_CRT_SECURE_NO_WARNINGS",
+        }) catch @panic("OOM"),
+        .linux => list.append(b.allocator, "-D_XOPEN_SOURCE=700") catch @panic("OOM"),
+        else => {},
+    }
+    return list.toOwnedSlice(b.allocator) catch @panic("OOM");
+}
+
+fn baseTestCxxFlags(b: *std.Build, target: std.Target) []const []const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    list.appendSlice(b.allocator, &.{
+        "-std=c++17",
+        "-fno-strict-aliasing",
+        "-fno-common",
+    }) catch @panic("OOM");
+    switch (target.os.tag) {
+        .windows => list.appendSlice(b.allocator, &.{
+            "-DWIN32_LEAN_AND_MEAN",
+            "-DNOMINMAX",
+            "-D_CRT_SECURE_NO_WARNINGS",
+        }) catch @panic("OOM"),
+        .linux => list.append(b.allocator, "-D_XOPEN_SOURCE=700") catch @panic("OOM"),
+        else => {},
+    }
+    return list.toOwnedSlice(b.allocator) catch @panic("OOM");
+}
+
+fn addUpstreamTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    enable_asm: bool,
+    sources: *Sources,
+    libs: Libs,
+) void {
+    const t = target.result;
+    const test_cxx_flags = baseTestCxxFlags(b, t);
+    const test_c_flags = baseTestCFlags(b, t);
+
+    // gtest static lib (vendored under third_party/googletest/).
+    const gtest_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    inline for (.{
+        "third_party/googletest/googlemock/include",
+        "third_party/googletest/googletest/include",
+        "third_party/googletest/googlemock",
+        "third_party/googletest/googletest",
+    }) |p| gtest_mod.addIncludePath(b.path(p));
+    gtest_mod.addCSourceFiles(.{
+        .files = &.{
+            "third_party/googletest/googlemock/src/gmock-all.cc",
+            "third_party/googletest/googletest/src/gtest-all.cc",
+        },
+        .flags = test_cxx_flags,
+        .language = .cpp,
+    });
+    const gtest_lib = b.addLibrary(.{
+        .name = "boringssl_gtest",
+        .linkage = .static,
+        .root_module = gtest_mod,
+    });
+
+    // test_support static lib.
+    const ts_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    ts_mod.addIncludePath(b.path("include"));
+    ts_mod.addIncludePath(b.path("third_party/googletest/googletest/include"));
+    ts_mod.addIncludePath(b.path("third_party/googletest/googlemock/include"));
+    {
+        const split = splitSourcesByLang(b, sources.test_support.srcs);
+        ts_mod.addCSourceFiles(.{ .files = split.cpp, .flags = test_cxx_flags, .language = .cpp });
+        if (split.c.len > 0) {
+            ts_mod.addCSourceFiles(.{ .files = split.c, .flags = test_c_flags, .language = .c });
+        }
+    }
+    if (enable_asm) {
+        const is_win_x86_family = t.os.tag == .windows and (t.cpu.arch == .x86 or t.cpu.arch == .x86_64);
+        const use_nasm = is_win_x86_family;
+        var asm_list = collectAsm(b, t, use_nasm, &.{sources.test_support});
+        defer asm_list.deinit(b.allocator);
+        if (asm_list.items.len > 0) {
+            if (use_nasm) {
+                addNasmObjects(b, ts_mod, target, asm_list.items);
+            } else {
+                ts_mod.addCSourceFiles(.{
+                    .files = asm_list.items,
+                    .flags = asm_flags,
+                    .language = .assembly_with_preprocessor,
+                });
+            }
+        }
+    }
+    ts_mod.linkLibrary(gtest_lib);
+    ts_mod.linkLibrary(libs.crypto);
+    const ts_lib = b.addLibrary(.{
+        .name = "boringssl_test_support",
+        .linkage = .static,
+        .root_module = ts_mod,
+    });
+
+    const test_all = b.step("test-all", "Build and run BoringSSL's C++ test suite linked to our libs");
+
+    addOneTest(b, target, optimize, "crypto_test", sources.crypto_test.srcs,
+        test_cxx_flags, test_c_flags, gtest_lib, ts_lib, &.{ libs.ssl, libs.crypto }, test_all);
+    addOneTest(b, target, optimize, "ssl_test", sources.ssl_test.srcs,
+        test_cxx_flags, test_c_flags, gtest_lib, ts_lib, &.{ libs.ssl, libs.crypto }, test_all);
+    if (libs.pki) |pki| {
+        var deps = [_]*std.Build.Step.Compile{ pki, libs.crypto };
+        addOneTest(b, target, optimize, "pki_test", sources.pki_test.srcs,
+            test_cxx_flags, test_c_flags, gtest_lib, ts_lib, deps[0..], test_all);
+    }
+    if (t.os.tag == .linux) {
+        addOneTest(b, target, optimize, "urandom_test", sources.urandom_test.srcs,
+            test_cxx_flags, test_c_flags, gtest_lib, ts_lib, &.{libs.crypto}, test_all);
+    }
+}
+
+fn addOneTest(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    srcs: []const []const u8,
+    test_cxx_flags: []const []const u8,
+    test_c_flags: []const []const u8,
+    gtest_lib: *std.Build.Step.Compile,
+    ts_lib: *std.Build.Step.Compile,
+    extra_libs: []const *std.Build.Step.Compile,
+    test_all: *std.Build.Step,
+) void {
+    const mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    mod.addIncludePath(b.path("include"));
+    mod.addIncludePath(b.path("third_party/googletest/googletest/include"));
+    mod.addIncludePath(b.path("third_party/googletest/googlemock/include"));
+
+    const split = splitSourcesByLang(b, srcs);
+    mod.addCSourceFiles(.{ .files = split.cpp, .flags = test_cxx_flags, .language = .cpp });
+    if (split.c.len > 0) {
+        mod.addCSourceFiles(.{ .files = split.c, .flags = test_c_flags, .language = .c });
+    }
+
+    mod.linkLibrary(ts_lib);
+    mod.linkLibrary(gtest_lib);
+    for (extra_libs) |l| mod.linkLibrary(l);
+
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = mod,
+    });
+    const run = b.addRunArtifact(exe);
+    // Test data files (crypto/blake2/*_tests.txt, pki/testdata/*) are
+    // referenced relative to the BoringSSL root; run with cwd = repo root.
+    run.setCwd(b.path("."));
+    test_all.dependOn(&run.step);
 }

@@ -63,6 +63,13 @@ jobs:
         # the asm path on Windows too.
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} test
 
+      - name: Run BoringSSL upstream test suite
+        # Skip on Windows for now — needs separate bring-up: test_support's
+        # ABI trampolines + several tests around fd/socket behavior haven't
+        # been validated against -windows-gnu's runtime.
+        if: matrix.run_smoke && runner.os != 'Windows'
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} test-all
+
       - name: Native build only
         if: ${{ !matrix.run_smoke }}
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }}
