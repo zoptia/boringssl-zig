@@ -15,9 +15,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: master
+      - name: Install Zig via zvk
+        # zvk's install.sh modifies ~/.profile / ~/.zshrc for the user's
+        # interactive shells; GitHub Actions runs each step in a fresh
+        # non-interactive shell, so we re-publish the bin dir to $GITHUB_PATH
+        # ourselves to make `zig` visible in subsequent steps.
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.sh | sh
+          echo "$HOME/.zoptia/zig/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: zig version
 
       - name: Native build + smoke test
         run: zig build test
