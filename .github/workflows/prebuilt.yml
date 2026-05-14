@@ -1,0 +1,123 @@
+name: Prebuilt release
+
+# Triggered by pushing a `v0.*` tag. For each supported target, runs the
+# build natively (or cross-compiled where no native runner exists), packages
+# `lib/*.{a,lib}` + `include/openssl/*.h` into a tarball, and uploads the
+# tarballs + a SHA256SUMS manifest as assets on the GitHub Release for the
+# tag.
+#
+# Run manually via `gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0` to
+# back-fill a release.
+
+on:
+  push:
+    tags: ['v0.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach the assets to'
+        required: true
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners — `.a` shape, default lib<name>.a naming.
+          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            archive_ext: a   }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            archive_ext: a   }
+          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            archive_ext: a   }
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a   }
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib }
+          # Cross-only — wasm32-wasi.
+          - { os: ubuntu-latest,    label: wasm32-wasi,          target: wasm32-wasi,          extra: "-Dasm=false", archive_ext: a   }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig via zvk (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.sh | sh
+          echo "$HOME/.zoptia/zig/bin" >> "$GITHUB_PATH"
+
+      - name: Install Zig via zvk (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.ps1 | iex
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.zoptia\zig\bin"
+
+      - name: Show toolchain
+        run: zig version
+
+      - name: Build (release)
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} -Doptimize=ReleaseFast
+
+      - name: Stage tarball contents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          STAGE="boringssl-${RELEASE_TAG}-${{ matrix.label }}"
+          mkdir -p "$STAGE/lib" "$STAGE/include"
+          # Copy whatever lib<name>.{a,lib} / <name>.lib zig-out produced.
+          cp zig-out/lib/* "$STAGE/lib/"
+          cp -R zig-out/include/openssl "$STAGE/include/"
+          tar czf "${STAGE}.tar.gz" "$STAGE"
+          shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          ls -lh "${STAGE}.tar.gz" "${STAGE}.tar.gz.sha256"
+
+      - name: Upload artifact for collect job
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.label }}
+          path: |
+            boringssl-${{ env.RELEASE_TAG }}-${{ matrix.label }}.tar.gz
+            boringssl-${{ env.RELEASE_TAG }}-${{ matrix.label }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all tarballs
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Build SHA256SUMS
+        run: |
+          set -euxo pipefail
+          cd assets
+          # Combine the per-tarball .sha256 files into one SHA256SUMS document.
+          # Each per-tarball file already has the form `<hash>  <filename>`.
+          cat *.tar.gz.sha256 | sort > SHA256SUMS
+          rm -f *.tar.gz.sha256
+          ls -lh
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          cd assets
+          # Create the release if the tag push path bypassed the UI; ignore if
+          # it already exists. Then attach all assets (clobber if rerun).
+          gh release create "${{ env.RELEASE_TAG }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ env.RELEASE_TAG }}" \
+            --notes "Prebuilt BoringSSL static libs for ${{ env.RELEASE_TAG }}. See README-zig.md for usage." \
+            --verify-tag \
+            || true
+          gh release upload "${{ env.RELEASE_TAG }}" *.tar.gz SHA256SUMS \
+            --repo "${{ github.repository }}" --clobber

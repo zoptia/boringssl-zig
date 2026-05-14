@@ -124,6 +124,51 @@ not run the smoke test there. C/C++ consumers using `cl.exe`/`link.exe`
 do **not** hit this — they link the `.lib` files with the MSVC C++
 runtime, which is what BoringSSL was designed for on Windows.
 
+### Mobile platform support (iOS, Android)
+
+Zig 0.16/0.17 does not bundle the iOS SDK or Android NDK, so source-mode
+cross-compilation to `aarch64-ios` or `aarch64-linux-android` fails on
+the very first BoringSSL header (`assert.h`, `sys/types.h` not found).
+
+Two options if you need mobile:
+
+1. **Bring your own SDK.** Build with `zig cc` flags pointing at
+   `xcrun --sdk iphoneos --show-sdk-path` (iOS) or your Android NDK
+   sysroot, then feed the resulting `.a` back through `-Dprefix=<path>`.
+   We don't expose this in `build.zig` directly because the SDK paths
+   are environment-specific.
+2. **Wait for prebuilt artifacts.** A future release will include
+   `aarch64-ios` and `aarch64-linux-android` tarballs built on CI
+   runners that have the SDK installed.
+
+## Prebuilt downloads
+
+Each `v0.YYYYMMDD.0` tag triggers
+[`prebuilt.yml`](.github/workflows/prebuilt.yml), which uploads
+per-target tarballs as assets on the corresponding GitHub Release:
+
+```
+boringssl-v0.YYYYMMDD.0-linux-x86_64.tar.gz
+boringssl-v0.YYYYMMDD.0-linux-aarch64.tar.gz
+boringssl-v0.YYYYMMDD.0-macos-aarch64.tar.gz
+boringssl-v0.YYYYMMDD.0-windows-x86_64-gnu.tar.gz
+boringssl-v0.YYYYMMDD.0-windows-x86_64-msvc.tar.gz
+boringssl-v0.YYYYMMDD.0-wasm32-wasi.tar.gz
+SHA256SUMS
+```
+
+Layout inside each tarball:
+
+```
+boringssl-v0.YYYYMMDD.0-<target>/
+├── lib/lib{crypto,ssl,pki}.a   (or .lib on -windows-msvc)
+└── include/openssl/*.h
+```
+
+Verify with `shasum -a 256 -c SHA256SUMS`, then point a downstream
+`-Dprefix=<extracted-dir>` at it (see [`-Dprefix`](#-dprefix-for-cached--system--patched-builds)
+above).
+
 ## Build requirements
 
 - **Zig 0.16+** (development tracks Zig nightly `0.17.0-dev.298+ad1b746e2`
