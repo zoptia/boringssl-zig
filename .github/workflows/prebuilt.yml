@@ -30,29 +30,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native runners — `.a` shape, default lib<name>.a naming.
-          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            archive_ext: a   }
-          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            archive_ext: a   }
-          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            archive_ext: a   }
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a   }
-          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib }
-          # Cross-only — no native ARM Windows hosted runner on GitHub yet,
-          # but the GAS-format .S files compile fine without NASM so we can
-          # cross-build from Linux. MSVC variant of ARM Windows is omitted:
-          # cross-compiling -windows-msvc from non-Windows hosts fails to
-          # find advapi32 etc. (Zig doesn't bundle the MSVC SDK).
-          - { os: ubuntu-latest,    label: windows-aarch64-gnu,  target: aarch64-windows-gnu,  extra: "",            archive_ext: a   }
-          # Cross-only — wasm32-wasi.
-          - { os: ubuntu-latest,    label: wasm32-wasi,          target: wasm32-wasi,          extra: "-Dasm=false", archive_ext: a   }
-          # musl static .a — works on Alpine, embedded Linux, and as
-          # an Android (Bionic) drop-in: the archive only references
-          # standard POSIX/C/pthread/operator-new symbols, all of
-          # which Bionic provides at ABI-equivalent calling
-          # conventions. We deliberately avoid the NDK because Zig's
-          # bundled clang and the NDK's libc++ headers can't agree on
-          # internal LIBCPP macros (see README-zig.md mobile section).
-          - { os: ubuntu-latest,    label: linux-musl-aarch64,   target: aarch64-linux-musl,   extra: "",            archive_ext: a   }
-          - { os: ubuntu-latest,    label: linux-musl-x86_64,    target: x86_64-linux-musl,    extra: "",            archive_ext: a   }
+          # `run_tests: true` means the host can natively execute the produced
+          # binary, so prebuilt.yml will run BoringSSL's own ~3500 C++ tests
+          # (zig build test-all) in release mode before staging the tarball.
+          # If the test binary fails, the publish job is skipped — the GitHub
+          # Release won't get an asset that lost a test.
+
+          # Native runners.
+          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            archive_ext: a,   run_tests: true  }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            archive_ext: a,   run_tests: true  }
+          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            archive_ext: a,   run_tests: true  }
+          # Windows: ci.yml's test-all already skips Windows due to test_support
+          # ABI trampolines + socket-related tests not being validated against
+          # -windows-gnu's runtime; same caveat here. windows-msvc additionally
+          # can't even link the smoke binary (Zig libcxx vs MSVC SDK clash).
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a,   run_tests: false }
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib, run_tests: false }
+          # Cross-only — no native ARM Windows runner on GitHub yet (cross-
+          # build from Linux works because the .S files are GAS-format).
+          # MSVC ARM omitted — cross from Linux/macOS to -windows-msvc can't
+          # find the SDK.
+          - { os: ubuntu-latest,    label: windows-aarch64-gnu,  target: aarch64-windows-gnu,  extra: "",            archive_ext: a,   run_tests: false }
+          # Cross-only — wasm32-wasi (no wasi runtime on the runner by default).
+          - { os: ubuntu-latest,    label: wasm32-wasi,          target: wasm32-wasi,          extra: "-Dasm=false", archive_ext: a,   run_tests: false }
+          # musl static .a — works on Alpine, embedded Linux, and as an Android
+          # (Bionic) drop-in. The musl-static test binaries run fine on a
+          # glibc host (kernel ABI is the same), so we test them natively
+          # on whichever host arch matches the target.
+          - { os: ubuntu-latest,    label: linux-musl-x86_64,    target: x86_64-linux-musl,    extra: "",            archive_ext: a,   run_tests: true  }
+          - { os: ubuntu-24.04-arm, label: linux-musl-aarch64,   target: aarch64-linux-musl,   extra: "",            archive_ext: a,   run_tests: true  }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +82,13 @@ jobs:
 
       - name: Build (release)
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} -Doptimize=ReleaseFast
+
+      - name: Run BoringSSL upstream test suite (release)
+        # Only when the host can natively execute the produced binary.
+        # Failure here skips the publish job — broken artifacts never
+        # land on a release.
+        if: matrix.run_tests
+        run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} -Doptimize=ReleaseFast test-all
 
       - name: Stage tarball contents
         # Use git-bash on Windows so the same shell snippet works everywhere.
