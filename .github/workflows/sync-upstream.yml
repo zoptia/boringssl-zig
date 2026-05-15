@@ -36,6 +36,15 @@ jobs:
           title: "chore: sync upstream BoringSSL"
           body: |
             Automated weekly sync of `google/boringssl@main` via
-            `git subtree pull --squash`. CI on this PR validates the new
-            upstream still builds.
+            `git fetch upstream && git merge upstream/main`. CI on this
+            PR validates the new upstream still builds and `zig build
+            test-all` still passes.
+
+            Merge order:
+            1. Wait for CI green on this PR.
+            2. Merge with the default merge commit (don't squash — we
+               want upstream's commit history visible in `git log`).
+            3. To ship a release, manually
+               `git tag v0.$(date +%Y%m%d).0 && git push --tags`,
+               which triggers `prebuilt.yml` to publish tarballs.
           delete-branch: true
