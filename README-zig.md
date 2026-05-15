@@ -244,16 +244,37 @@ are uncommon — most file paths owned by us (`build.zig`, `src/…`, `tests/…
 `.github/workflows/ci.yml`, `.github/workflows/sync-upstream.yml`) have
 names upstream does not use.
 
-### Tag a release
+### Sync + tag + release flow (the automated path)
+
+The week-to-week pipeline is split into three stages, two automatic and
+one manual:
+
+| Trigger | Workflow | What happens |
+|---|---|---|
+| Mondays 10:00 UTC (or `workflow_dispatch`) | `sync-upstream.yml` | Opens a `sync/upstream-YYYYMMDD` PR with the upstream merge |
+| PR merged into `main` | `auto-tag.yml` | Creates `v0.YYYYMMDD.0` tag on the merge commit (no release) |
+| You decide to ship | `prebuilt.yml` (manual) | Builds 9 prebuilt tarballs + SHA256SUMS, attaches them to the GitHub Release for the chosen tag |
+
+So the maintainer's only manual step on a successful sync is:
 
 ```sh
-git tag v0.$(date +%Y%m%d).0
-git push --tags
+gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0 --repo zoptia/boringssl-zig
+# or use Actions → "Prebuilt release" → "Run workflow" in the GitHub UI
 ```
 
-A weekly GitHub Action (`.github/workflows/sync-upstream.yml`) runs the
-sync script and opens a PR. CI on the PR verifies the new tree still
-compiles before merge.
+Why release stays manual: the `git merge` to main is reversible, and the
+`v0.YYYYMMDD.0` tag is just a name — but a published GitHub Release with
+prebuilt tarballs is a public commitment downstream consumers will pin.
+Worth one human "looks good, ship it".
+
+### Manual sync (off-cron or local)
+
+```sh
+./scripts/sync-upstream.sh   # git fetch upstream && git merge upstream/main
+zig build test-all           # validate against BoringSSL's own C++ test suite
+git push
+# auto-tag.yml will fire when the resulting PR (if you open one) is merged
+```
 
 ### When a sync breaks the build
 

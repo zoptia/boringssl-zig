@@ -10,16 +10,18 @@ name: Prebuilt release
 # back-fill a release.
 
 on:
-  push:
-    tags: ['v0.*']
+  # Manual only — auto-tag.yml will create dated tags after sync merges
+  # but does NOT trigger a release. To ship prebuilt tarballs, run:
+  #   gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0
+  # or use the Actions → "Prebuilt release" → "Run workflow" UI.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to attach the assets to'
+        description: 'Existing tag to publish prebuilt assets for (e.g. v0.20260514.0)'
         required: true
 
 env:
-  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.event.inputs.tag }}
 
 jobs:
   build:

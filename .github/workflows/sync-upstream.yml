@@ -40,11 +40,15 @@ jobs:
             PR validates the new upstream still builds and `zig build
             test-all` still passes.
 
-            Merge order:
+            What happens next:
             1. Wait for CI green on this PR.
             2. Merge with the default merge commit (don't squash — we
                want upstream's commit history visible in `git log`).
-            3. To ship a release, manually
-               `git tag v0.$(date +%Y%m%d).0 && git push --tags`,
-               which triggers `prebuilt.yml` to publish tarballs.
+            3. `auto-tag.yml` will fire on merge and create a
+               `v0.YYYYMMDD.0` tag automatically. The tag does NOT
+               publish a release.
+            4. To ship prebuilt tarballs for that tag, manually run:
+                  gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0
+               (or use Actions → "Prebuilt release" → "Run workflow"
+               in the GitHub UI.)
           delete-branch: true
