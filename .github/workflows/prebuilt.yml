@@ -40,14 +40,17 @@ jobs:
           - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            archive_ext: a,   run_tests: true  }
           - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            archive_ext: a,   run_tests: true  }
           - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            archive_ext: a,   run_tests: true  }
-          # Windows: ci.yml's test-all already skips Windows due to test_support
-          # ABI trampolines + socket-related tests not being validated against
-          # -windows-gnu's runtime; same caveat here. windows-msvc additionally
-          # can't even link the smoke binary (Zig libcxx vs MSVC SDK clash).
-          # Probe: previously skipped as a precaution; let prebuilt actually
-          # run test-all on -windows-gnu to see what fails (if anything).
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a,   run_tests: true  }
-          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib, run_tests: false }
+          # Windows x86_64 needs NASM (use_nasm: true) for both the
+          # crypto/bcm perlasm output AND the test_support ABI trampolines
+          # — those only ship in NASM form for x86/x86_64 windows. With
+          # NASM installed we can also drop -Dasm=false and ship a full
+          # asm-accelerated build.
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            archive_ext: a,   run_tests: true,  use_nasm: true }
+          # windows-msvc keeps run_tests=false — Zig 0.16's bundled libcxx
+          # clashes with the MSVC SDK's <typeinfo> at link time. The .lib
+          # itself builds fine and MSVC consumers using their own runtime
+          # don't hit this.
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "",            archive_ext: lib, run_tests: false, use_nasm: true }
           # Cross-only — no native ARM Windows runner on GitHub yet (cross-
           # build from Linux works because the .S files are GAS-format).
           # MSVC ARM omitted — cross from Linux/macOS to -windows-msvc can't
@@ -81,6 +84,10 @@ jobs:
 
       - name: Show toolchain
         run: zig version
+
+      - name: Set up NASM (Windows x86_64)
+        if: matrix.use_nasm
+        uses: ilammy/setup-nasm@v1
 
       - name: Build (release)
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} -Doptimize=ReleaseFast

@@ -738,6 +738,13 @@ fn addOneTest(
     mod.linkLibrary(gtest_lib);
     for (extra_libs) |l| mod.linkLibrary(l);
 
+    // On Windows, BoringSSL's ABI test harness uses dbghelp for stack
+    // walking / symbolization (SymFromAddr, SymInitialize, …). Not needed
+    // on other platforms.
+    if (target.result.os.tag == .windows) {
+        mod.linkSystemLibrary("dbghelp", .{});
+    }
+
     const exe = b.addExecutable(.{
         .name = name,
         .root_module = mod,

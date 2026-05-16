@@ -17,21 +17,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            run_smoke: true  }
-          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            run_smoke: true  }
-          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            run_smoke: true  }
+          - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            run_smoke: true,  run_test_all: true  }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            run_smoke: true,  run_test_all: true  }
+          - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            run_smoke: true,  run_test_all: true  }
           # macos-13 (x86_64) is paused: GitHub-hosted macos-13 runners are
           # heavily oversubscribed and our jobs sit in `queued` for hours.
           # Re-enable once availability improves, or move to a self-hosted
           # Intel Mac.
           # - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", run_smoke: true  }
-          # windows-msvc: build only. Zig 0.16's bundled libcxx clashes with
-          # MSVC's <typeinfo> when linking a Zig executable for -windows-msvc
-          # (two `type_info` declarations meeting via libcxxabi's
+          # Windows x86_64 needs NASM for both crypto perlasm and the
+          # test_support ABI trampolines (only ship NASM for x86/x86_64).
+          # We install it below conditionally on use_nasm.
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            run_smoke: true,  use_nasm: true,  run_test_all: true  }
+          # windows-msvc: still build-only. Zig 0.16's bundled libcxx clashes
+          # with MSVC's <typeinfo> when linking a Zig executable for
+          # -windows-msvc (two `type_info` declarations meeting via libcxxabi's
           # cxa_exception.cpp). BoringSSL's own .lib builds fine — MSVC
           # consumers link it with their own C++ runtime and never hit this.
-          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", run_smoke: false }
+          # NASM still on so we can ship a full asm-accelerated .lib.
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "",            run_smoke: false, use_nasm: true,  run_test_all: false }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -55,19 +59,16 @@ jobs:
       - name: Show toolchain
         run: zig version
 
+      - name: Set up NASM (Windows x86_64)
+        if: matrix.use_nasm
+        uses: ilammy/setup-nasm@v1
+
       - name: Native build + smoke test
         if: matrix.run_smoke
-        # Windows runners get -Dasm=false because the perlasm output for x86/
-        # x86_64 is in NASM syntax and Zig does not bundle NASM. Add a
-        # `choco install -y nasm` step before this if you want to validate
-        # the asm path on Windows too.
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} test
 
       - name: Run BoringSSL upstream test suite
-        # Skip on Windows for now — needs separate bring-up: test_support's
-        # ABI trampolines + several tests around fd/socket behavior haven't
-        # been validated against -windows-gnu's runtime.
-        if: matrix.run_smoke && runner.os != 'Windows'
+        if: matrix.run_test_all
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }} test-all
 
       - name: Native build only
