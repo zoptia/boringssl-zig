@@ -67,6 +67,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build the *tag* the user asked us to publish, not whatever
+          # main HEAD currently is. Without this, repeating a prebuilt
+          # run for an old tag silently builds today's code.
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Zig via zvk (Unix)
         if: runner.os != 'Windows'
