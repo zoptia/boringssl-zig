@@ -25,19 +25,21 @@ jobs:
           # Re-enable once availability improves, or move to a self-hosted
           # Intel Mac.
           # - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
-          # Windows x86_64 gets NASM (for crypto/bcm perlasm + test_support
-          # ABI trampolines) and full asm enabled. test-all still can't run
-          # on windows-gnu — see prebuilt.yml for the upstream guard
-          # mismatch story (p256_test.cc vs third_party/fiat/asm). Smoke
-          # runs natively; that's our windows-gnu coverage today.
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            run_smoke: true,  use_nasm: true,  run_test_all: false }
-          # windows-msvc: still build-only. Zig 0.16's bundled libcxx clashes
-          # with MSVC's <typeinfo> when linking a Zig executable for
-          # -windows-msvc (two `type_info` declarations meeting via libcxxabi's
-          # cxa_exception.cpp). BoringSSL's own .lib builds fine — MSVC
-          # consumers link it with their own C++ runtime and never hit this.
-          # NASM still on so we can ship a full asm-accelerated .lib.
-          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "",            run_smoke: false, use_nasm: true,  run_test_all: false }
+          # Windows x86_64 needs -Dasm=false because third_party/fiat/asm/
+          # fiat_p256_adx_{mul,sqr}.S guards its body on (__APPLE__ || __ELF__)
+          # — neither holds on COFF/PE, so the asm files are empty TUs on
+          # windows. The C++ callers of those symbols *do* get emitted on
+          # mingw (__GNUC__ && __x86_64__ matches), and linking any executable
+          # then trips on 'undefined symbol fiat_p256_adx_mul/sqr'. OPENSSL_NO_ASM
+          # suppresses the callers. Static .a (prebuilt) wouldn't catch
+          # this — only executable link does — so we keep it -Dasm=false
+          # for both CI and prebuilt for consistency. NASM is therefore
+          # unnecessary here too.
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", run_smoke: true,  use_nasm: false, run_test_all: false }
+          # windows-msvc: same fiat-asm story applies (link fails for any
+          # exe), and additionally Zig 0.16's bundled libcxx clashes with
+          # MSVC's <typeinfo> when linking a Zig executable. Build-only.
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", run_smoke: false, use_nasm: false, run_test_all: false }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

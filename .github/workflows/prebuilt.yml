@@ -40,22 +40,17 @@ jobs:
           - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            archive_ext: a,   run_tests: true  }
           - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            archive_ext: a,   run_tests: true  }
           - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            archive_ext: a,   run_tests: true  }
-          # Windows x86_64 needs NASM (use_nasm: true) for the crypto/bcm
-          # perlasm output. NASM is also a prereq for running the
-          # test_support ABI trampolines, but test-all still can't run on
-          # windows-gnu — upstream's crypto/fipsmodule/ec/p256_test.cc
-          # guards its ADX-mul/sqr cases on (__GNUC__ && __x86_64__) which
-          # mingw-clang satisfies, but third_party/fiat/asm/fiat_p256_adx_*.S
-          # guards on (__APPLE__ || __ELF__) which COFF/PE doesn't, so the
-          # test ends up calling fiat_p256_adx_mul/sqr that never got
-          # emitted. We don't patch vendor/ so just skip test-all here.
-          # Smoke still runs end to end via ci.yml.
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            archive_ext: a,   run_tests: false, use_nasm: true }
-          # windows-msvc keeps run_tests=false — Zig 0.16's bundled libcxx
-          # clashes with the MSVC SDK's <typeinfo> at link time. The .lib
-          # itself builds fine and MSVC consumers using their own runtime
-          # don't hit this.
-          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "",            archive_ext: lib, run_tests: false, use_nasm: true }
+          # Windows x86_64 must be built -Dasm=false. Reason: third_party/fiat/
+          # asm/fiat_p256_adx_{mul,sqr}.S only emits its body under
+          # (__APPLE__ || __ELF__), but the C++ callers in BoringSSL get
+          # emitted on mingw (__GNUC__ && __x86_64__). With asm enabled,
+          # the static .a contains dangling references to fiat_p256_adx_mul/
+          # sqr that downstream consumers can't link. -Dasm=false defines
+          # OPENSSL_NO_ASM, which suppresses the callers and keeps the .a
+          # self-contained at the cost of crypto perf on Windows. (.lib
+          # would behave the same; same flag.)
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a,   run_tests: false, use_nasm: false }
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib, run_tests: false, use_nasm: false }
           # Cross-only — no native ARM Windows runner on GitHub yet (cross-
           # build from Linux works because the .S files are GAS-format).
           # MSVC ARM omitted — cross from Linux/macOS to -windows-msvc can't
