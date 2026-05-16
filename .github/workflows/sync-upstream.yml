@@ -44,7 +44,10 @@ jobs:
           # merge commit already in git history with a clean working tree,
           # which the action interprets as "no changes" and bails with
           # "base and branch must be different".
-          git push -u origin "$BRANCH"
+          #
+          # --force-with-lease overwrites a same-day stale branch (e.g. when
+          # this workflow is re-run within 24h before a PR was opened/merged).
+          git push --force-with-lease -u origin "$BRANCH"
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
