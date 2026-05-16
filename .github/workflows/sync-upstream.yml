@@ -24,12 +24,25 @@ jobs:
       - name: Sync upstream
         id: sync
         run: |
+          set -euxo pipefail
           BRANCH="sync/upstream-$(date +%Y%m%d)"
           git checkout -b "$BRANCH"
           ./scripts/sync-upstream.sh
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          # If upstream is already merged (no new commits), the merge above
+          # is a no-op and HEAD == origin/main. peter-evans/create-pull-request
+          # would refuse with "base and branch must be different". Detect
+          # this and short-circuit cleanly so the workflow doesn't show red.
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
+            echo "Upstream had no new commits since last merge; nothing to PR."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Open PR
+        if: steps.sync.outputs.skip != 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           branch: ${{ steps.sync.outputs.branch }}
