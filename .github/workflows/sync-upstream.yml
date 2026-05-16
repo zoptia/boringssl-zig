@@ -21,7 +21,7 @@ jobs:
           git config user.name "boringssl-sync-bot"
           git config user.email "bot@users.noreply.github.com"
 
-      - name: Sync upstream
+      - name: Sync upstream + push branch
         id: sync
         run: |
           set -euxo pipefail
@@ -30,38 +30,50 @@ jobs:
           ./scripts/sync-upstream.sh
 
           # If upstream is already merged (no new commits), the merge above
-          # is a no-op and HEAD == origin/main. peter-evans/create-pull-request
-          # would refuse with "base and branch must be different". Detect
-          # this and short-circuit cleanly so the workflow doesn't show red.
+          # is a no-op and HEAD == origin/main. Short-circuit cleanly so the
+          # workflow finishes green and doesn't try to open an empty PR.
           if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
             echo "Upstream had no new commits since last merge; nothing to PR."
             echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # Push the branch we already built locally. We don't use
+          # peter-evans/create-pull-request here because that action expects
+          # to commit working-dir changes itself; our workflow has the
+          # merge commit already in git history with a clean working tree,
+          # which the action interprets as "no changes" and bails with
+          # "base and branch must be different".
+          git push -u origin "$BRANCH"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Open PR
         if: steps.sync.outputs.skip != 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: ${{ steps.sync.outputs.branch }}
-          title: "chore: sync upstream BoringSSL"
-          body: |
-            Automated weekly sync of `google/boringssl@main` via
-            `git fetch upstream && git merge upstream/main`. CI on this
-            PR validates the new upstream still builds and `zig build
-            test-all` still passes.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --repo "${{ github.repository }}" \
+            --base main \
+            --head "${{ steps.sync.outputs.branch }}" \
+            --title "chore: sync upstream BoringSSL" \
+            --body "$(cat <<'EOF'
+          Automated weekly sync of `google/boringssl@main` via
+          `git fetch upstream && git merge upstream/main`. CI on this
+          PR validates the new upstream still builds and `zig build
+          test-all` still passes.
 
-            What happens next:
-            1. Wait for CI green on this PR.
-            2. Merge with the default merge commit (don't squash — we
-               want upstream's commit history visible in `git log`).
-            3. `auto-tag.yml` will fire on merge and create a
-               `v0.YYYYMMDD.0` tag automatically. The tag does NOT
-               publish a release.
-            4. To ship prebuilt tarballs for that tag, manually run:
-                  gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0
-               (or use Actions → "Prebuilt release" → "Run workflow"
-               in the GitHub UI.)
-          delete-branch: true
+          What happens next:
+          1. Wait for CI green on this PR.
+          2. Merge with the default merge commit (don't squash — we
+             want upstream's commit history visible in `git log`).
+          3. `auto-tag.yml` will fire on merge and create a
+             `v0.YYYYMMDD.0` tag automatically. The tag does NOT
+             publish a release.
+          4. To ship prebuilt tarballs for that tag, manually run:
+                gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0
+             (or use Actions → "Prebuilt release" → "Run workflow"
+             in the GitHub UI.)
+          EOF
+          )"
