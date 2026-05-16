@@ -44,7 +44,9 @@ jobs:
           # ABI trampolines + socket-related tests not being validated against
           # -windows-gnu's runtime; same caveat here. windows-msvc additionally
           # can't even link the smoke binary (Zig libcxx vs MSVC SDK clash).
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a,   run_tests: false }
+          # Probe: previously skipped as a precaution; let prebuilt actually
+          # run test-all on -windows-gnu to see what fails (if anything).
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a,   run_tests: true  }
           - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib, run_tests: false }
           # Cross-only — no native ARM Windows runner on GitHub yet (cross-
           # build from Linux works because the .S files are GAS-format).
