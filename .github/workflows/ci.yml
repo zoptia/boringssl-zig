@@ -25,10 +25,12 @@ jobs:
           # Re-enable once availability improves, or move to a self-hosted
           # Intel Mac.
           # - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
-          # Windows x86_64 needs NASM for both crypto perlasm and the
-          # test_support ABI trampolines (only ship NASM for x86/x86_64).
-          # We install it below conditionally on use_nasm.
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            run_smoke: true,  use_nasm: true,  run_test_all: true  }
+          # Windows x86_64 gets NASM (for crypto/bcm perlasm + test_support
+          # ABI trampolines) and full asm enabled. test-all still can't run
+          # on windows-gnu — see prebuilt.yml for the upstream guard
+          # mismatch story (p256_test.cc vs third_party/fiat/asm). Smoke
+          # runs natively; that's our windows-gnu coverage today.
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            run_smoke: true,  use_nasm: true,  run_test_all: false }
           # windows-msvc: still build-only. Zig 0.16's bundled libcxx clashes
           # with MSVC's <typeinfo> when linking a Zig executable for
           # -windows-msvc (two `type_info` declarations meeting via libcxxabi's
