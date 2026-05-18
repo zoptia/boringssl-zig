@@ -23,7 +23,7 @@ Produce a Zig package that:
 ### 2.1 Upstream tracking: fork at root, sync via `git merge`
 
 - Upstream files live at the repo **root** (`crypto/`, `ssl/`, `pki/`, `include/`, `gen/`, …) exactly as in `google/boringssl`.
-- Our additions sit alongside them at the root (`build.zig`, `build.zig.zon`) and in fresh subdirectories (`src/`, `tests/`, `scripts/`, `.github/workflows/ci.yml`, `.github/workflows/sync-upstream.yml`).
+- Our additions sit alongside them at the root (`build.zig`, `build.zig.zon`) and in fresh subdirectories (`src/`, `tests/`, `scripts/`, `.github/workflows/ci.yml`, `.github/workflows/prebuilt.yml`).
 - The two files where names *would* collide with upstream are renamed: our README is `README-zig.md`, our license file is `LICENSE-zig`. Upstream's `README.md` and `LICENSE` are kept untouched.
 - Upstream sync is plain `git fetch upstream && git merge upstream/main`, wrapped in `scripts/sync-upstream.sh`. The first run of that script adds the `upstream` remote; subsequent runs just fetch+merge.
 - Why this layout (and not `git subtree` under `vendor/boringssl/`): the standard merge workflow keeps upstream commit SHAs visible, avoids `git subtree`'s squash artifacts, and uses only standard git. Conflicts are still rare in practice — upstream BoringSSL has never shipped a `build.zig` and never will.
@@ -74,8 +74,8 @@ boringssl-zig/
 ├── scripts/sync-upstream.sh   # git fetch upstream && git merge
 ├── .github/workflows/
 │   ├── branch-time.yml        # upstream's, untouched
-│   ├── ci.yml                 # ours: build verification on every push
-│   └── sync-upstream.yml      # ours: weekly cron, opens merge PR
+│   ├── ci.yml                 # ours: build + test-all on every push/PR
+│   └── prebuilt.yml           # ours: build per-target tarballs on v0.* tag push
 └── (rest of the BoringSSL tree at the root: crypto/, ssl/, pki/,
    include/, gen/, third_party/, util/, …)
 ```

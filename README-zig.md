@@ -229,52 +229,61 @@ build-system-only fixes between syncs (e.g., `v0.20260513.1`).
 
 ## Maintainer guide
 
-### Pull the latest upstream
+Sync and release happen locally — there's no cron-driven server-side
+automation. The flow is two commands you (or Claude Code) run in the
+checkout, followed by a tag push that triggers `prebuilt.yml` server-side.
+
+### Sync upstream and ship a release
 
 ```sh
+# 1. Pull upstream into the local main branch
 ./scripts/sync-upstream.sh
-zig build test
-git push
+
+# 2. Validate against BoringSSL's own ~3500 C++ tests in release mode
+zig build -Doptimize=ReleaseFast test-all
+
+# 3. Push main (so the tag commit is reachable on origin)
+git push origin main
+
+# 4. Tag and push — this triggers prebuilt.yml on GitHub
+TAG="v0.$(date -u +%Y%m%d).0"
+git tag -a "$TAG" -m "Sync upstream BoringSSL $(date -u +%Y-%m-%d)"
+git push origin "$TAG"
 ```
 
-The sync script is idempotent: it adds an `upstream` remote on first run if
-not present, then `git fetch upstream && git merge upstream/main`. Conflicts
-are uncommon — most file paths owned by us (`build.zig`, `src/…`, `tests/…`,
-`scripts/…`, `LICENSE-zig`, `README-zig.md`, `CLAUDE.md`,
-`.github/workflows/ci.yml`, `.github/workflows/sync-upstream.yml`) have
-names upstream does not use.
+`scripts/sync-upstream.sh` is idempotent: it adds an `upstream` remote on
+first run if not present, then `git fetch upstream && git merge upstream/main`.
+Conflicts are rare — most file paths owned by us (`build.zig`, `src/…`,
+`tests/…`, `scripts/…`, `LICENSE-zig`, `README-zig.md`, `CLAUDE.md`,
+`.github/workflows/{ci,prebuilt}.yml`) have names upstream doesn't use.
 
-### Sync + tag + release flow (the automated path)
+### What `prebuilt.yml` does after the tag push
 
-The week-to-week pipeline is split into three stages, two automatic and
-one manual:
+| Trigger | Action |
+|---|---|
+| `git push origin v0.*` | GitHub runs `prebuilt.yml`, which checks out the *tag* (not main HEAD), builds 9 target tarballs in `ReleaseFast`, runs `test-all` on every native runner, and uploads them + `SHA256SUMS` as assets on the GitHub Release for that tag |
+| `workflow_dispatch` (manual UI / `gh workflow run`) | Same, but you specify the tag — useful for back-filling an old tag |
 
-| Trigger | Workflow | What happens |
-|---|---|---|
-| Mondays 10:00 UTC (or `workflow_dispatch`) | `sync-upstream.yml` | Opens a `sync/upstream-YYYYMMDD` PR with the upstream merge |
-| PR merged into `main` | `auto-tag.yml` | Creates `v0.YYYYMMDD.0` tag on the merge commit (no release) |
-| You decide to ship | `prebuilt.yml` (manual) | Builds 9 prebuilt tarballs + SHA256SUMS, attaches them to the GitHub Release for the chosen tag |
+If any native job's `test-all` fails, that target's tarball isn't staged
+and the publish job's dependency fails — the broken artifact never lands
+on the release.
 
-So the maintainer's only manual step on a successful sync is:
+### Why this and not GitHub-side automation
 
-```sh
-gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0 --repo zoptia/boringssl-zig
-# or use Actions → "Prebuilt release" → "Run workflow" in the GitHub UI
-```
+Earlier the repo had `sync-upstream.yml` (weekly cron, PR + auto-tag) and
+`auto-tag.yml`. They were removed because:
 
-Why release stays manual: the `git merge` to main is reversible, and the
-`v0.YYYYMMDD.0` tag is just a name — but a published GitHub Release with
-prebuilt tarballs is a public commitment downstream consumers will pin.
-Worth one human "looks good, ship it".
+- Local validation runs the full `zig build test-all` on the host where
+  you'd actually catch a regression first, before any commit hits CI.
+- `gh pr create` from `GITHUB_TOKEN` doesn't trigger pre-merge CI
+  (GitHub's anti-recursion protection), so the server-side path either
+  needed a PAT or shipped without CI gating.
+- For a fork this size, "run two commands and push a tag" is faster than
+  reviewing an auto-generated PR.
 
-### Manual sync (off-cron or local)
-
-```sh
-./scripts/sync-upstream.sh   # git fetch upstream && git merge upstream/main
-zig build test-all           # validate against BoringSSL's own C++ test suite
-git push
-# auto-tag.yml will fire when the resulting PR (if you open one) is merged
-```
+The git workflow is still standard: `git fetch upstream && git merge`
+is what `scripts/sync-upstream.sh` does, so any contributor without
+Claude Code can run it by hand.
 
 ### When a sync breaks the build
 

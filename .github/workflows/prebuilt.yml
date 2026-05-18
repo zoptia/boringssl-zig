@@ -1,19 +1,19 @@
 name: Prebuilt release
 
-# Triggered by pushing a `v0.*` tag. For each supported target, runs the
-# build natively (or cross-compiled where no native runner exists), packages
-# `lib/*.{a,lib}` + `include/openssl/*.h` into a tarball, and uploads the
-# tarballs + a SHA256SUMS manifest as assets on the GitHub Release for the
+# Builds prebuilt static libs for every supported target and uploads the
+# tarballs + SHA256SUMS as assets on the GitHub Release for the triggering
 # tag.
 #
-# Run manually via `gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0` to
-# back-fill a release.
+# Triggers:
+#   - push of a `v0.*` tag  — the normal path; the maintainer pushes a tag
+#     locally (after running `zig build test-all` to validate the sync) and
+#     this workflow ships the release.
+#   - workflow_dispatch     — back-fill an old tag, or rebuild after a
+#     prebuilt-only fix.
 
 on:
-  # Manual only — auto-tag.yml will create dated tags after sync merges
-  # but does NOT trigger a release. To ship prebuilt tarballs, run:
-  #   gh workflow run prebuilt.yml -F tag=v0.YYYYMMDD.0
-  # or use the Actions → "Prebuilt release" → "Run workflow" UI.
+  push:
+    tags: ['v0.*']
   workflow_dispatch:
     inputs:
       tag:
@@ -21,7 +21,7 @@ on:
         required: true
 
 env:
-  RELEASE_TAG: ${{ github.event.inputs.tag }}
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
