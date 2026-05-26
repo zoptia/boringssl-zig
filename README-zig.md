@@ -1,10 +1,10 @@
-# boringssl-zig
+# zoptia0boringssl
 
 A pure-Zig build of [Google's BoringSSL](https://github.com/google/boringssl).
 
 This repository is a **fork** of `google/boringssl`: upstream files live at
 the repo root unchanged, and our additions (`build.zig`, `src/`, `tests/`,
-`scripts/`, `.github/workflows/ci.yml`, `.github/workflows/sync-upstream.yml`)
+`scripts/`, `.github/workflows/ci.yml`, `.github/workflows/prebuilt.yml`)
 sit alongside them. Upstream sync is plain `git fetch upstream && git merge`.
 
 The build driver parses BoringSSL's own [`gen/sources.json`](gen/sources.json)
@@ -20,7 +20,7 @@ churn is mostly absorbed without touching `build.zig`.
 Add this package to your project:
 
 ```sh
-zig fetch --save=boringssl git+https://github.com/zoptia/boringssl-zig#v0.20260513.0
+zig fetch --save=boringssl git+https://github.com/zoptia/zoptia0boringssl#v0.20260513.0
 ```
 
 Then in your `build.zig`:
@@ -218,7 +218,7 @@ above).
 - **Zig 0.16+** (development tracks Zig nightly `0.17.0-dev.298+ad1b746e2`
   or newer; the `0.16.0` stable release also works).
 - **Nothing else.** Go is *only* needed if you regenerate the files under
-  `gen/`, which boringssl-zig never does at build time (they ship
+  `gen/`, which zoptia0boringssl never does at build time (they ship
   pre-generated upstream).
 
 ## Versioning
@@ -301,7 +301,7 @@ Triage in this order:
 ## Project layout
 
 ```
-boringssl-zig/
+zoptia0boringssl/
 ├── README.md             # upstream BoringSSL README (untouched)
 ├── LICENSE               # upstream BoringSSL license (untouched)
 ├── README-zig.md         # this file

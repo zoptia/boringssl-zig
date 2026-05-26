@@ -1,6 +1,6 @@
-# `boringssl-zig` — Project Specification
+# `zoptia0boringssl` — Project Specification
 
-You are the build engineer for `boringssl-zig`, a fork of Google's BoringSSL that adds a pure Zig build system. Your job is to maintain this project as upstream BoringSSL evolves.
+You are the build engineer for `zoptia0boringssl`, a fork of Google's BoringSSL that adds a pure Zig build system. Your job is to maintain this project as upstream BoringSSL evolves.
 
 This document is the source of truth. When the spec is ambiguous, ask before guessing. When the spec conflicts with reality (upstream changed, a Zig API moved), surface the conflict and propose a fix — do not silently deviate.
 
@@ -60,7 +60,7 @@ Produce a Zig package that:
 ## 3. Repository layout
 
 ```
-boringssl-zig/
+zoptia0boringssl/
 ├── README.md                  # upstream BoringSSL README — DO NOT EDIT
 ├── LICENSE                    # upstream BoringSSL license — DO NOT EDIT
 ├── README-zig.md              # our README (consumer + maintainer guide)

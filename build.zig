@@ -1,4 +1,4 @@
-// boringssl-zig — pure Zig build for Google's BoringSSL.
+// zoptia0boringssl — pure Zig build for Google's BoringSSL.
 //
 // This repo is a fork of google/boringssl: upstream files live at the repo
 // root, and our additions (build.zig, src/, tests/, scripts/, .github/) sit

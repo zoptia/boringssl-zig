@@ -1,4 +1,4 @@
-//! Minimal Zig wrapper for boringssl-zig.
+//! Minimal Zig wrapper for zoptia0boringssl.
 //!
 //! BoringSSL's headers are not directly translatable by Zig's `translate-c`
 //! (the macro-heavy `DEFINE_STACK_OF` and friends defeat the C importer).
