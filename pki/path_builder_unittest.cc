@@ -738,7 +738,7 @@ TEST_F(PathBuilderMultiRootTest, TestIterationLimit) {
       // building is expected to fail in this case.
       path_builder.SetIterationLimit(1);
     } else {
-      // The other tests in this file exercise the case that |SetIterationLimit|
+      // The other tests in this file exercise the case that `SetIterationLimit`
       // isn't called. Therefore set a sufficient limit for the path to be
       // found.
       path_builder.SetIterationLimit(5);
@@ -924,7 +924,7 @@ TEST_F(PathBuilderMultiRootTest, TestDepthLimit) {
       // Therefore, building is expected to fail.
       path_builder.SetDepthLimit(2);
     } else {
-      // The other tests in this file exercise the case that |SetDepthLimit|
+      // The other tests in this file exercise the case that `SetDepthLimit`
       // isn't called. Therefore, set a sufficient limit for the path to be
       // found.
       path_builder.SetDepthLimit(5);
@@ -1726,8 +1726,8 @@ TEST_F(PathBuilderKeyRolloverTest, TestDuplicateIntermediates) {
   TrustStoreInMemory trust_store;
   trust_store.AddTrustAnchor(newroot_);
 
-  // The oldintermediate is supplied synchronously by |sync_certs1| and
-  // another copy of oldintermediate is supplied synchronously by |sync_certs2|.
+  // The oldintermediate is supplied synchronously by `sync_certs1` and
+  // another copy of oldintermediate is supplied synchronously by `sync_certs2`.
   // The path target <- oldintermediate <- newroot  should be built first,
   // though it won't verify. It should not be attempted again even though
   // oldintermediate was supplied twice.
@@ -1796,7 +1796,7 @@ TEST_F(PathBuilderKeyRolloverTest, TestDuplicateIntermediateAndRoot) {
   TrustStoreInMemory trust_store;
   trust_store.AddTrustAnchor(newroot_);
 
-  // The oldintermediate and newroot are supplied synchronously by |sync_certs|.
+  // The oldintermediate and newroot are supplied synchronously by `sync_certs`.
   CertIssuerSourceStatic sync_certs;
   sync_certs.AddCert(oldintermediate_);
   sync_certs.AddCert(newroot_dupe);
@@ -2065,13 +2065,13 @@ class PathBuilderSimpleChainTest : public ::testing::Test {
     ASSERT_EQ(3u, test_.chain.size());
   }
 
-  // Runs the path builder for the target certificate while |distrusted_cert| is
-  // blocked, and |delegate| if non-null.
+  // Runs the path builder for the target certificate while `distrusted_cert` is
+  // blocked, and `delegate` if non-null.
   CertPathBuilder::Result RunPathBuilder(
       const std::shared_ptr<const ParsedCertificate> &distrusted_cert,
       CertPathBuilderDelegate *optional_delegate) {
-    // Set up the trust store such that |distrusted_cert| is blocked, and
-    // the root is trusted (except if it was |distrusted_cert|).
+    // Set up the trust store such that `distrusted_cert` is blocked, and
+    // the root is trusted (except if it was `distrusted_cert`).
     TrustStoreInMemory trust_store;
     if (distrusted_cert != test_.chain.back()) {
       trust_store.AddTrustAnchor(test_.chain.back());
@@ -2117,7 +2117,7 @@ class PathBuilderDistrustTest : public PathBuilderSimpleChainTest {
   PathBuilderDistrustTest() = default;
 
  protected:
-  // Runs the path builder for the target certificate while |distrusted_cert| is
+  // Runs the path builder for the target certificate while `distrusted_cert` is
   // blocked.
   CertPathBuilder::Result RunPathBuilderWithDistrustedCert(
       const std::shared_ptr<const ParsedCertificate> &distrusted_cert) {
@@ -2452,6 +2452,133 @@ TEST_F(PathBuilderCheckPathAfterVerificationTest, SetsDelegateData) {
   EXPECT_EQ(0xB33F, data->value);
 }
 
+class PathBuilderMTCPlants04Test : public PathBuilderSimpleChainTest {
+ public:
+  PathBuilderMTCPlants04Test() = default;
+
+ protected:
+  void SetUp() override {
+    PathBuilderSimpleChainTest::SetUp();
+
+    // Set up the MTCAnchor.
+    std::string subtree_hash;
+    ASSERT_TRUE(string_util::Base64Decode(
+        "ir6iVcgTrbuHdXB3lKGny6VKSlE1OB5Q+LrtdFH+qIE=", &subtree_hash));
+    TrustedSubtree subtree;
+    ASSERT_EQ(subtree_hash.size(), subtree.hash.size());
+    memcpy(subtree.hash.data(), subtree_hash.data(), subtree_hash.size());
+    subtree.range.start = 0;
+    subtree.range.end = 10;
+    std::map<uint16_t, std::vector<TrustedSubtree>> subtrees;
+    subtrees[1] = {std::move(subtree)};
+    static constexpr uint8_t ca_id[] = {0x81, 0xfd, 0x59, 0x01};
+    mtc_anchor_ =
+        std::make_shared<MTCAnchor>(MakeSpan(ca_id), std::move(subtrees));
+    ASSERT_EQ(mtc_anchor_->spec_version(), MTCAnchor::kPlants04);
+  }
+
+  CertPathBuilder::Result RunPathBuilder(
+      const std::shared_ptr<const ParsedCertificate> &leaf,
+      TrustStoreInMemory *trust_store, CertIssuerSource *intermediates,
+      CertPathBuilderDelegate *delegate) {
+    SimplePathBuilderDelegate default_delegate(
+        2048, SimplePathBuilderDelegate::DigestPolicy::kStrong);
+    if (!delegate) {
+      delegate = &default_delegate;
+    }
+
+    CertPathBuilder path_builder(
+        leaf, trust_store, delegate, leaf->tbs().validity_not_before,
+        KeyPurpose::ANY_EKU, InitialExplicitPolicy::kFalse,
+        {der::Input(kAnyPolicyOid)}, InitialPolicyMappingInhibit::kFalse,
+        InitialAnyPolicyInhibit::kFalse);
+    if (intermediates) {
+      path_builder.AddCertIssuerSource(intermediates);
+    }
+    return path_builder.Run();
+  }
+
+  std::shared_ptr<MTCAnchor> mtc_anchor_;
+};
+
+TEST_F(PathBuilderMTCPlants04Test, CheckPathAfterVerification) {
+  // Set up MTC leaf and its trust anchor.
+  std::shared_ptr<const ParsedCertificate> mtc_leaf;
+  ASSERT_TRUE(ReadTestCert("mtc_plants04/mtc-leaf.pem", &mtc_leaf));
+  TrustStoreInMemory in_memory;
+  ASSERT_TRUE(in_memory.AddMTCTrustAnchor(mtc_anchor_));
+
+  // Check that the path is valid with no delegate.
+  CertPathBuilder::Result result =
+      RunPathBuilder(mtc_leaf, &in_memory, nullptr, nullptr);
+  ASSERT_TRUE(result.HasValidPath());
+
+  // Check that verification fails when the delegate adds an error.
+  AddOtherErrorPathBuilderDelegate delegate;
+  result = RunPathBuilder(mtc_leaf, &in_memory, nullptr, &delegate);
+  ASSERT_FALSE(result.HasValidPath());
+
+  ASSERT_LT(result.best_result_index, result.paths.size());
+  const CertPathBuilderResultPath *failed_path =
+      result.paths[result.best_result_index].get();
+  ASSERT_TRUE(failed_path);
+
+  // An error should have been added to other errors
+  const CertErrors *other_errors = failed_path->errors.GetOtherErrors();
+  ASSERT_TRUE(other_errors);
+  EXPECT_TRUE(other_errors->ContainsError(kErrorFromDelegate));
+
+  // The newly defined delegate error should map to VERIFICATION_FAILURE
+  // since the error is not associated to a certificate.
+  VerifyError error = result.GetBestPathVerifyError();
+  ASSERT_EQ(error.Code(), VerifyError::StatusCode::VERIFICATION_FAILURE)
+      << error.DiagnosticString();
+}
+
+TEST_F(PathBuilderMTCPlants04Test, PathLength) {
+  std::shared_ptr<const ParsedCertificate> leaf;
+  ASSERT_TRUE(ReadTestCert("mtc_plants04/leaf.pem", &leaf));
+  std::shared_ptr<const ParsedCertificate> ica;
+  ASSERT_TRUE(ReadTestCert("mtc_plants04/mtc-ica.pem", &ica));
+
+  // Test that verifying leaf succeeds using ica as the trusted root.
+  {
+    TrustStoreInMemory in_memory;
+    in_memory.AddTrustAnchor(ica);
+    CertPathBuilder::Result result =
+        RunPathBuilder(leaf, &in_memory, nullptr, nullptr);
+    EXPECT_TRUE(result.HasValidPath());
+  }
+
+  // Test that verifying ica (as a leaf) succeeds using the MTC trust anchor.
+  {
+    TrustStoreInMemory in_memory;
+    ASSERT_TRUE(in_memory.AddMTCTrustAnchor(mtc_anchor_));
+    CertPathBuilder::Result result =
+        RunPathBuilder(ica, &in_memory, nullptr, nullptr);
+    EXPECT_TRUE(result.HasValidPath());
+  }
+
+  // Test that verifying leaf fails when using the MTC trust anchor.
+  {
+    TrustStoreInMemory in_memory;
+    ASSERT_TRUE(in_memory.AddMTCTrustAnchor(mtc_anchor_));
+    CertIssuerSourceStatic intermediates;
+    intermediates.AddCert(ica);
+    CertPathBuilder::Result result =
+        RunPathBuilder(leaf, &in_memory, &intermediates, nullptr);
+    EXPECT_FALSE(result.HasValidPath());
+    VerifyError error = result.GetBestPathVerifyError();
+    EXPECT_EQ(error.Code(), VerifyError::StatusCode::PATH_NOT_FOUND)
+        << error.DiagnosticString();
+    const auto &path = *result.GetBestPathPossiblyInvalid();
+    ASSERT_EQ(3u, path.certs.size());
+    EXPECT_EQ(leaf, path.certs[0]);
+    EXPECT_EQ(ica, path.certs[1]);
+    EXPECT_EQ(mtc_anchor_->AsCert(), path.certs[2]);
+  }
+}
+
 class PathBuilderMTCTest : public PathBuilderSimpleChainTest {
  public:
   PathBuilderMTCTest() = default;
@@ -2473,6 +2600,7 @@ class PathBuilderMTCTest : public PathBuilderSimpleChainTest {
     static const uint8_t log_id[] = {0x81, 0xfd, 0x59, 0x01};
     mtc_anchor_ =
         std::make_shared<MTCAnchor>(MakeSpan(log_id), MakeSpan(subtrees));
+    ASSERT_EQ(mtc_anchor_->spec_version(), MTCAnchor::kDavidben08);
   }
 
   CertPathBuilder::Result RunPathBuilder(
@@ -3047,8 +3175,8 @@ TEST(PathBuilderPrioritizationTest, SelfIssuedPrioritization) {
   // Path builder should have built paths to both trusted roots.
   ASSERT_EQ(2U, result.paths.size());
 
-  // |root1| should have been preferred because it is self-issued, even though
-  // the notBefore date is older than |root1_cross|.
+  // `root1` should have been preferred because it is self-issued, even though
+  // the notBefore date is older than `root1_cross`.
   EXPECT_TRUE(result.paths[0]->IsValid());
   ASSERT_EQ(2U, result.paths[0]->certs.size());
   EXPECT_EQ(target, result.paths[0]->certs[0]);
