@@ -257,6 +257,17 @@ Conflicts are rare — most file paths owned by us (`build.zig`, `src/…`,
 `tests/…`, `scripts/…`, `LICENSE-zig`, `README-zig.md`, `CLAUDE.md`,
 `.github/workflows/{ci,prebuilt}.yml`) have names upstream doesn't use.
 
+#### Fresh clones on a new machine
+
+Git remotes live in the local `.git/config` and are **not** cloned with the
+repo, so a fresh `git clone` only has `origin` — there is no `upstream`. You
+do **not** need to add it by hand: the upstream URL is baked into
+`scripts/sync-upstream.sh` (the `UPSTREAM_URL` variable), and the script adds
+the remote automatically on its first run. Just run `./scripts/sync-upstream.sh`
+on any new checkout and syncing works. (Git has no mechanism to ship a remote
+inside the repository itself, which is exactly why the URL lives in the
+script rather than in git config.)
+
 ### What `prebuilt.yml` does after the tag push
 
 | Trigger | Action |
