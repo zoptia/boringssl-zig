@@ -50,15 +50,15 @@ jobs:
         # zvk's install.sh edits the user's shell rc, which GitHub Actions
         # doesn't pick up across steps; re-publish bin dir to GITHUB_PATH.
         run: |
-          curl -fsSL https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.sh | sh
-          echo "$HOME/.zoptia/zig/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/zoptia/zvk/main/install.sh | sh
+          echo "$HOME/.zvk/bin" >> "$GITHUB_PATH"
 
       - name: Install Zig via zvk (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          irm https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.ps1 | iex
-          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.zoptia\zig\bin"
+          irm https://raw.githubusercontent.com/zoptia/zvk/main/install.ps1 | iex
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.zvk\bin"
 
       - name: Show toolchain
         run: zig version
@@ -93,8 +93,8 @@ jobs:
 
       - name: Install Zig via zvk
         run: |
-          curl -fsSL https://raw.githubusercontent.com/zoptia/zig-version-kit/main/install.sh | sh
-          echo "$HOME/.zoptia/zig/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/zoptia/zvk/main/install.sh | sh
+          echo "$HOME/.zvk/bin" >> "$GITHUB_PATH"
 
       - name: Build only
         run: zig build -Dtarget=${{ matrix.target }} ${{ matrix.extra }}
