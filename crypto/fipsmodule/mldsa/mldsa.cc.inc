@@ -62,8 +62,9 @@ constexpr uint32_t kPrime = 8380417;
 constexpr uint32_t kPrimeNegInverse = 4236238847;
 constexpr int kDroppedBits = 13;
 constexpr uint32_t kHalfPrime = (kPrime - 1) / 2;
-// 256^-1 mod kPrime, in Montgomery form.
-constexpr uint32_t kInverseDegreeMontgomery = 41978;
+// 256^-1 * R^2 mod kPrime. This is not 256^-1 in Montgomery form, but 256^-1
+// doubly-converted to Montgomery form.
+constexpr uint32_t kInverseDegreeDoubleMontgomery = 41978;
 
 // Constants that vary depending on ML-DSA size.
 //
@@ -366,8 +367,11 @@ inline uint32_t reduce_montgomery(uint64_t x) {
   return reduce_once(c);
 }
 
-// Multiply two scalars in the number theoretically transformed state.
-inline void scalar_mult(scalar *out, const scalar *lhs, const scalar *rhs) {
+// Montgomery-multiply two scalars in the number theoretically transformed
+// state. Each term gains an extra R^-1 term, which is expected to be canceled
+// by `scalar_inverse_ntt_montgomery`.
+inline void scalar_mult_montgomery(scalar *out, const scalar *lhs,
+                                   const scalar *rhs) {
   for (int i = 0; i < kDegree; i++) {
     out->c[i] = reduce_montgomery((uint64_t)lhs->c[i] * (uint64_t)rhs->c[i]);
   }
@@ -409,10 +413,13 @@ inline void scalar_ntt(scalar *s) {
 #undef ITER
 }
 
-// In place inverse number theoretic transform of a given scalar.
+// In place inverse number theoretic transform of a given scalar, but with each
+// term multiplied by an extra factor of R. This is function is intended to be
+// used with products that have gone through `reduce_montgomery` one extra time,
+// so the extra R^-1 term is canceled out.
 //
 // FIPS 204, Algorithm 42 (`NTT^-1`).
-inline void scalar_inverse_ntt(scalar *s) {
+inline void scalar_inverse_ntt_montgomery(scalar *s) {
   // Manually unrolled loop to maximize vectorization.
 #define ITER(step, offset)                                                     \
   {                                                                            \
@@ -448,9 +455,11 @@ inline void scalar_inverse_ntt(scalar *s) {
   static_assert(kDegree == 256);
 #undef ITER
 
+  // `kInverseDegreeDoubleMontgomery` has been double-converted to Montgomery
+  // form, so the result is an extra R term in the final result.
   for (int i = 0; i < kDegree; i++) {
-    s->c[i] = reduce_montgomery((uint64_t)s->c[i] *
-                                (uint64_t)kInverseDegreeMontgomery);
+    s->c[i] = reduce_montgomery(uint64_t{s->c[i]} *
+                                uint64_t{kInverseDegreeDoubleMontgomery});
   }
 }
 
@@ -476,10 +485,10 @@ inline void vector_sub(vector<X> *out, const vector<X> *lhs,
 }
 
 template <int X>
-inline void vector_mult_scalar(vector<X> *out, const vector<X> *lhs,
-                               const scalar *rhs) {
+inline void vector_mult_scalar_montgomery(vector<X> *out, const vector<X> *lhs,
+                                          const scalar *rhs) {
   for (int i = 0; i < X; i++) {
-    scalar_mult(&out->v[i], &lhs->v[i], rhs);
+    scalar_mult_montgomery(&out->v[i], &lhs->v[i], rhs);
   }
 }
 
@@ -491,20 +500,20 @@ inline void vector_ntt(vector<X> *a) {
 }
 
 template <int X>
-inline void vector_inverse_ntt(vector<X> *a) {
+inline void vector_inverse_ntt_montgomery(vector<X> *a) {
   for (int i = 0; i < X; i++) {
-    scalar_inverse_ntt(&a->v[i]);
+    scalar_inverse_ntt_montgomery(&a->v[i]);
   }
 }
 
 template <int K, int L>
-inline void matrix_mult(vector<K> *out, const matrix<K, L> *m,
-                        const vector<L> *a) {
+inline void matrix_mult_montgomery(vector<K> *out, const matrix<K, L> *m,
+                                   const vector<L> *a) {
   vector_zero(out);
   for (int i = 0; i < K; i++) {
     for (int j = 0; j < L; j++) {
       scalar product;
-      scalar_mult(&product, &m->v[i][j], &a->v[j]);
+      scalar_mult_montgomery(&product, &m->v[i][j], &a->v[j]);
       scalar_add(&out->v[i], &out->v[i], &product);
     }
   }
@@ -777,8 +786,12 @@ inline void vector_use_hint_vartime(vector<K> *out, const vector<K> *h,
 
 /* Bit packing */
 
+template <int bits>
+inline void scalar_encode(uint8_t *out, const scalar *s);
+
 // FIPS 204, Algorithm 16 (`SimpleBitPack`). Specialized to bitlen(b) = 4.
-inline void scalar_encode_4(uint8_t out[128], const scalar *s) {
+template <>
+inline void scalar_encode<4>(uint8_t out[128], const scalar *s) {
   // Every two elements lands on a byte boundary.
   static_assert(kDegree % 2 == 0, "kDegree must be a multiple of 2");
   for (int i = 0; i < kDegree / 2; i++) {
@@ -791,7 +804,8 @@ inline void scalar_encode_4(uint8_t out[128], const scalar *s) {
 }
 
 // FIPS 204, Algorithm 16 (`SimpleBitPack`). Specialized to bitlen(b) = 6.
-inline void scalar_encode_6(uint8_t out[192], const scalar *s) {
+template <>
+inline void scalar_encode<6>(uint8_t out[192], const scalar *s) {
   // Every four elements lands on a byte boundary.
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
   for (int i = 0; i < kDegree / 4; i++) {
@@ -810,7 +824,8 @@ inline void scalar_encode_6(uint8_t out[192], const scalar *s) {
 }
 
 // FIPS 204, Algorithm 16 (`SimpleBitPack`). Specialized to bitlen(b) = 10.
-inline void scalar_encode_10(uint8_t out[320], const scalar *s) {
+template <>
+inline void scalar_encode<10>(uint8_t out[320], const scalar *s) {
   // Every four elements lands on a byte boundary.
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
   for (int i = 0; i < kDegree / 4; i++) {
@@ -830,8 +845,12 @@ inline void scalar_encode_10(uint8_t out[320], const scalar *s) {
   }
 }
 
+template <int bits, uint32_t max>
+inline void scalar_encode_signed(uint8_t *out, const scalar *s);
+
 // FIPS 204, Algorithm 17 (`BitPack`). Specialized to bitlen(a+b) = 4 and b = 4.
-inline void scalar_encode_signed_4_4(uint8_t out[128], const scalar *s) {
+template <>
+inline void scalar_encode_signed<4, 4>(uint8_t out[128], const scalar *s) {
   // Every two elements lands on a byte boundary.
   static_assert(kDegree % 2 == 0, "kDegree must be a multiple of 2");
   for (int i = 0; i < kDegree / 2; i++) {
@@ -844,7 +863,8 @@ inline void scalar_encode_signed_4_4(uint8_t out[128], const scalar *s) {
 }
 
 // FIPS 204, Algorithm 17 (`BitPack`). Specialized to bitlen(a+b) = 3 and b = 2.
-inline void scalar_encode_signed_3_2(uint8_t out[96], const scalar *s) {
+template <>
+inline void scalar_encode_signed<3, 2>(uint8_t out[96], const scalar *s) {
   static_assert(kDegree % 8 == 0, "kDegree must be a multiple of 8");
   for (int i = 0; i < kDegree / 8; i++) {
     uint32_t a = mod_sub(2, s->c[8 * i]);
@@ -865,7 +885,9 @@ inline void scalar_encode_signed_3_2(uint8_t out[96], const scalar *s) {
 
 // FIPS 204, Algorithm 17 (`BitPack`). Specialized to bitlen(a+b) = 13 and b =
 // 2^12.
-inline void scalar_encode_signed_13_12(uint8_t out[416], const scalar *s) {
+template <>
+inline void scalar_encode_signed<13, (1u << 12)>(uint8_t out[416],
+                                                 const scalar *s) {
   static const uint32_t kMax = 1u << 12;
   // Every two elements lands on a byte boundary.
   static_assert(kDegree % 8 == 0, "kDegree must be a multiple of 8");
@@ -905,7 +927,9 @@ inline void scalar_encode_signed_13_12(uint8_t out[416], const scalar *s) {
 
 // FIPS 204, Algorithm 17 (`BitPack`). Specialized to bitlen(a+b) = 20 and b =
 // 2^19.
-inline void scalar_encode_signed_20_19(uint8_t out[640], const scalar *s) {
+template <>
+inline void scalar_encode_signed<20, (1u << 19)>(uint8_t out[640],
+                                                 const scalar *s) {
   static const uint32_t kMax = 1u << 19;
   // Every two elements lands on a byte boundary.
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
@@ -931,7 +955,9 @@ inline void scalar_encode_signed_20_19(uint8_t out[640], const scalar *s) {
 
 // FIPS 204, Algorithm 17 (`BitPack`). Specialized to bitlen(a+b) = 18 and b =
 // 2^17.
-inline void scalar_encode_signed_18_17(uint8_t out[576], const scalar *s) {
+template <>
+inline void scalar_encode_signed<18, (1u << 17)>(uint8_t out[576],
+                                                 const scalar *s) {
   static const uint32_t kMax = 1u << 17;
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
   for (int i = 0; i < kDegree / 4; i++) {
@@ -955,30 +981,12 @@ inline void scalar_encode_signed_18_17(uint8_t out[576], const scalar *s) {
   }
 }
 
-// FIPS 204, Algorithm 17 (`BitPack`).
-inline void scalar_encode_signed(uint8_t *out, const scalar *s, int bits,
-                                 uint32_t max) {
-  if (bits == 3) {
-    assert(max == 2);
-    scalar_encode_signed_3_2(out, s);
-  } else if (bits == 4) {
-    assert(max == 4);
-    scalar_encode_signed_4_4(out, s);
-  } else if (bits == 20) {
-    assert(max == 1u << 19);
-    scalar_encode_signed_20_19(out, s);
-  } else if (bits == 18) {
-    assert(max == 1u << 17);
-    scalar_encode_signed_18_17(out, s);
-  } else {
-    assert(bits == 13);
-    assert(max == 1u << 12);
-    scalar_encode_signed_13_12(out, s);
-  }
-}
+template <int bits>
+inline void scalar_decode(scalar *out, const uint8_t *in);
 
 // FIPS 204, Algorithm 18 (`SimpleBitUnpack`). Specialized for bitlen(b) == 10.
-inline void scalar_decode_10(scalar *out, const uint8_t in[320]) {
+template <>
+inline void scalar_decode<10>(scalar *out, const uint8_t in[320]) {
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
   for (int i = 0; i < kDegree / 4; i++) {
     uint32_t v = CRYPTO_load_u32_le(&in[5 * i]);
@@ -989,9 +997,13 @@ inline void scalar_decode_10(scalar *out, const uint8_t in[320]) {
   }
 }
 
+template <int bits, uint32_t max>
+inline int scalar_decode_signed(scalar *out, const uint8_t *in);
+
 // FIPS 204, Algorithm 19 (`BitUnpack`). Specialized to bitlen(a+b) = 4 and b =
 // 4.
-inline int scalar_decode_signed_4_4(scalar *out, const uint8_t in[128]) {
+template <>
+inline int scalar_decode_signed<4, 4>(scalar *out, const uint8_t in[128]) {
   static_assert(kDegree % 8 == 0, "kDegree must be a multiple of 8");
   for (int i = 0; i < kDegree / 8; i++) {
     uint32_t v = CRYPTO_load_u32_le(&in[4 * i]);
@@ -1020,7 +1032,8 @@ inline int scalar_decode_signed_4_4(scalar *out, const uint8_t in[128]) {
 
 // FIPS 204, Algorithm 19 (`BitUnpack`). Specialized to bitlen(a+b) = 3 and b =
 // 2.
-inline int scalar_decode_signed_3_2(scalar *out, const uint8_t in[96]) {
+template <>
+inline int scalar_decode_signed<3, 2>(scalar *out, const uint8_t in[96]) {
   uint32_t v;
   uint8_t v_bytes[sizeof(v)] = {0};
   static_assert(kDegree % 8 == 0, "kDegree must be a multiple of 8");
@@ -1053,7 +1066,9 @@ inline int scalar_decode_signed_3_2(scalar *out, const uint8_t in[96]) {
 
 // FIPS 204, Algorithm 19 (`BitUnpack`). Specialized to bitlen(a+b) = 13 and b =
 // 2^12.
-inline void scalar_decode_signed_13_12(scalar *out, const uint8_t in[416]) {
+template <>
+inline int scalar_decode_signed<13, (1u << 12)>(scalar *out,
+                                                const uint8_t in[416]) {
   static const uint32_t kMax = 1u << 12;
   static const uint32_t k13Bits = (1u << 13) - 1;
   static const uint32_t k7Bits = (1u << 7) - 1;
@@ -1076,11 +1091,14 @@ inline void scalar_decode_signed_13_12(scalar *out, const uint8_t in[416]) {
     out->c[i * 8 + 6] = mod_sub(kMax, (c >> 14) & k13Bits);
     out->c[i * 8 + 7] = mod_sub(kMax, (c >> 27) | ((uint32_t)d) << 5);
   }
+  return 1;
 }
 
 // FIPS 204, Algorithm 19 (`BitUnpack`). Specialized to bitlen(a+b) = 18 and b =
 // 2^17.
-inline void scalar_decode_signed_18_17(scalar *out, const uint8_t in[576]) {
+template <>
+inline int scalar_decode_signed<18, (1u << 17)>(scalar *out,
+                                                const uint8_t in[576]) {
   static const uint32_t kMax = 1u << 17;
 
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
@@ -1102,11 +1120,14 @@ inline void scalar_decode_signed_18_17(scalar *out, const uint8_t in[576]) {
     out->c[i * 4 + 2] = mod_sub(kMax, c);
     out->c[i * 4 + 3] = mod_sub(kMax, d);
   }
+  return 1;
 }
 
 // FIPS 204, Algorithm 19 (`BitUnpack`). Specialized to bitlen(a+b) = 20 and b =
 // 2^19.
-inline void scalar_decode_signed_20_19(scalar *out, const uint8_t in[640]) {
+template <>
+inline int scalar_decode_signed<20, (1u << 19)>(scalar *out,
+                                                const uint8_t in[640]) {
   static const uint32_t kMax = 1u << 19;
   static const uint32_t k20Bits = (1u << 20) - 1;
 
@@ -1123,33 +1144,10 @@ inline void scalar_decode_signed_20_19(scalar *out, const uint8_t in[640]) {
     out->c[i * 4 + 2] = mod_sub(kMax, (b >> 8) & k20Bits);
     out->c[i * 4 + 3] = mod_sub(kMax, (b >> 28) | ((uint32_t)c) << 4);
   }
+  return 1;
 }
 
-// FIPS 204, Algorithm 19 (`BitUnpack`).
-inline int scalar_decode_signed(scalar *out, const uint8_t *in, int bits,
-                                uint32_t max) {
-  if (bits == 3) {
-    assert(max == 2);
-    return scalar_decode_signed_3_2(out, in);
-  } else if (bits == 4) {
-    assert(max == 4);
-    return scalar_decode_signed_4_4(out, in);
-  } else if (bits == 13) {
-    assert(max == (1u << 12));
-    scalar_decode_signed_13_12(out, in);
-    return 1;
-  } else if (bits == 18) {
-    assert(max == (1u << 17));
-    scalar_decode_signed_18_17(out, in);
-    return 1;
-  } else if (bits == 20) {
-    assert(max == (1u << 19));
-    scalar_decode_signed_20_19(out, in);
-    return 1;
-  } else {
-    abort();
-  }
-}
+
 
 /* Expansion functions */
 
@@ -1157,29 +1155,55 @@ inline int scalar_decode_signed(scalar *out, const uint8_t *in, int bits,
 //
 // Rejection samples a Keccak stream to get uniformly distributed elements. This
 // is used for matrix expansion and only operates on public inputs.
-inline void scalar_from_keccak_vartime(
-    scalar *out, const uint8_t derived_seed[kRhoBytes + 2]) {
-  BORINGSSL_keccak_st keccak_ctx;
-  BORINGSSL_keccak_init(&keccak_ctx, boringssl_shake128);
-  BORINGSSL_keccak_absorb(&keccak_ctx, derived_seed, kRhoBytes + 2);
-  assert(keccak_ctx.squeeze_offset == 0);
-  assert(keccak_ctx.rate_bytes == 168);
+inline void scalar_from_keccak_block_vartime(scalar *out, int *done,
+                                             const uint8_t block[168]) {
+  for (size_t i = 0; i < 168 && *done < kDegree; i += 3) {
+    // FIPS 204, Algorithm 14 (`CoeffFromThreeBytes`).
+    uint32_t value = (uint32_t)block[i] | ((uint32_t)block[i + 1] << 8) |
+                     (((uint32_t)block[i + 2] & 0x7f) << 16);
+    if (value < kPrime) {
+      out->c[(*done)++] = value;
+    }
+  }
+}
+
+// FIPS 204, Algorithm 30 (`RejNTTPoly`).
+//
+// Rejection samples a Keccak stream to get uniformly distributed elements. This
+// is used for matrix expansion and only operates on public inputs.
+inline void scalar_from_keccak_vartime(scalar *out,
+                                       BORINGSSL_keccak_st *keccak_ctx) {
+  assert(keccak_ctx->squeeze_offset == 0);
+  assert(keccak_ctx->rate_bytes == 168);
   static_assert(168 % 3 == 0, "block and coefficient boundaries do not align");
 
   int done = 0;
   while (done < kDegree) {
     uint8_t block[168];
-    BORINGSSL_keccak_squeeze(&keccak_ctx, block, sizeof(block));
-    for (size_t i = 0; i < sizeof(block) && done < kDegree; i += 3) {
-      // FIPS 204, Algorithm 14 (`CoeffFromThreeBytes`).
-      uint32_t value = (uint32_t)block[i] | ((uint32_t)block[i + 1] << 8) |
-                       (((uint32_t)block[i + 2] & 0x7f) << 16);
-      if (value < kPrime) {
-        out->c[done++] = value;
-      }
-    }
+    BORINGSSL_keccak_squeeze(keccak_ctx, block, sizeof(block));
+    scalar_from_keccak_block_vartime(out, &done, block);
   }
 }
+
+#if defined(HAVE_KECCAK_X2)
+inline void scalar_from_keccak_vartime_x2(scalar *out[2],
+                                          BORINGSSL_keccak_st keccak_ctx[2]) {
+  assert(keccak_ctx[0].squeeze_offset == 0);
+  assert(keccak_ctx[0].rate_bytes == 168);
+  assert(keccak_ctx[1].squeeze_offset == 0);
+  assert(keccak_ctx[1].rate_bytes == 168);
+  static_assert(168 % 3 == 0, "block and coefficient boundaries do not align");
+
+  int done[2] = {0, 0};
+  while (done[0] < kDegree || done[1] < kDegree) {
+    uint8_t block[2][168];
+    uint8_t *blocks[] = {block[0], block[1]};
+    BORINGSSL_keccak_squeeze_x2(keccak_ctx, blocks, sizeof(block[0]));
+    scalar_from_keccak_block_vartime(out[0], &done[0], block[0]);
+    scalar_from_keccak_block_vartime(out[1], &done[1], block[1]);
+  }
+}
+#endif
 
 template <int ETA>
 inline bool coefficient_from_nibble(uint32_t nibble, uint32_t *result);
@@ -1208,48 +1232,76 @@ inline bool coefficient_from_nibble<2>(uint32_t nibble, uint32_t *result) {
   return false;
 }
 
-// FIPS 204, Algorithm 31 (`RejBoundedPoly`).
 template <int ETA>
-inline void scalar_uniform(scalar *out,
-                           const uint8_t derived_seed[kSigmaBytes + 2]) {
-  BORINGSSL_keccak_st keccak_ctx;
-  BORINGSSL_keccak_init(&keccak_ctx, boringssl_shake256);
-  BORINGSSL_keccak_absorb(&keccak_ctx, derived_seed, kSigmaBytes + 2);
-  assert(keccak_ctx.squeeze_offset == 0);
-  assert(keccak_ctx.rate_bytes == 136);
-
-  int done = 0;
-  while (done < kDegree) {
-    uint8_t block[136];
-    BORINGSSL_keccak_squeeze(&keccak_ctx, block, sizeof(block));
-    for (size_t i = 0; i < sizeof(block) && done < kDegree; ++i) {
-      uint32_t t0 = block[i] & 0x0F;
-      uint32_t t1 = block[i] >> 4;
-      // FIPS 204, Algorithm 15 (`CoefFromHalfByte`). Although both the input
-      // and output here are secret, it is OK to leak when we rejected a byte.
-      // Individual bytes of the SHAKE-256 stream are (indistinguishable from)
-      // independent of each other and the original seed, so leaking information
-      // about the rejected bytes does not reveal the input or output.
-      uint32_t v;
-      if (coefficient_from_nibble<ETA>(t0, &v)) {
-        out->c[done++] = v;
-      }
-      if (done < kDegree && coefficient_from_nibble<ETA>(t1, &v)) {
-        out->c[done++] = v;
-      }
+inline void scalar_uniform_block(scalar *out, int *done,
+                                 const uint8_t block[136]) {
+  for (size_t i = 0; i < 136 && *done < kDegree; ++i) {
+    uint32_t t0 = block[i] & 0x0F;
+    uint32_t t1 = block[i] >> 4;
+    // FIPS 204, Algorithm 15 (`CoefFromHalfByte`). Although both the input
+    // and output here are secret, it is OK to leak when we rejected a byte.
+    // Individual bytes of the SHAKE-256 stream are (indistinguishable from)
+    // independent of each other and the original seed, so leaking information
+    // about the rejected bytes does not reveal the input or output.
+    uint32_t v;
+    if (coefficient_from_nibble<ETA>(t0, &v)) {
+      out->c[(*done)++] = v;
+    }
+    if (*done < kDegree && coefficient_from_nibble<ETA>(t1, &v)) {
+      out->c[(*done)++] = v;
     }
   }
 }
 
+// FIPS 204, Algorithm 31 (`RejBoundedPoly`).
+template <int ETA>
+inline void scalar_uniform(scalar *out, BORINGSSL_keccak_st *keccak_ctx) {
+  assert(keccak_ctx->squeeze_offset == 0);
+  assert(keccak_ctx->rate_bytes == 136);
+
+  int done = 0;
+  while (done < kDegree) {
+    uint8_t block[136];
+    BORINGSSL_keccak_squeeze(keccak_ctx, block, sizeof(block));
+    scalar_uniform_block<ETA>(out, &done, block);
+  }
+}
+
+#if defined(HAVE_KECCAK_X2)
+template <int ETA>
+inline void scalar_uniform_x2(scalar *out[2],
+                              BORINGSSL_keccak_st keccak_ctx[2]) {
+  assert(keccak_ctx[0].squeeze_offset == 0);
+  assert(keccak_ctx[0].rate_bytes == 136);
+  assert(keccak_ctx[1].squeeze_offset == 0);
+  assert(keccak_ctx[1].rate_bytes == 136);
+
+  int done[2] = {0, 0};
+  while (done[0] < kDegree || done[1] < kDegree) {
+    uint8_t block[2][136];
+    uint8_t *blocks[] = {block[0], block[1]};
+    BORINGSSL_keccak_squeeze_x2(keccak_ctx, blocks, sizeof(block[0]));
+    scalar_uniform_block<ETA>(out[0], &done[0], block[0]);
+    scalar_uniform_block<ETA>(out[1], &done[1], block[1]);
+  }
+}
+#endif
+
 // FIPS 204, Algorithm 34 (`ExpandMask`), but just a single step.
 template <int K>
 inline void scalar_sample_mask(scalar *out,
-                               const uint8_t derived_seed[kRhoPrimeBytes + 2]) {
+                               const uint8_t rho_prime[kRhoPrimeBytes],
+                               size_t index) {
   uint8_t buf[scalar_le_gamma1_bytes<K>()];
-  BORINGSSL_keccak(buf, sizeof(buf), derived_seed, kRhoPrimeBytes + 2,
-                   boringssl_shake256);
-
-  scalar_decode_signed(out, buf, gamma1_bits<K>() + 1, gamma1<K>());
+  struct BORINGSSL_keccak_st ctx;
+  BORINGSSL_keccak_init(&ctx, boringssl_shake256);
+  BORINGSSL_keccak_absorb(&ctx, rho_prime, kRhoPrimeBytes);
+  uint8_t index_buf[2];
+  index_buf[0] = static_cast<uint8_t>(index);
+  index_buf[1] = static_cast<uint8_t>(index >> 8);
+  BORINGSSL_keccak_absorb(&ctx, index_buf, 2);
+  BORINGSSL_keccak_squeeze(&ctx, buf, sizeof(buf));
+  scalar_decode_signed<gamma1_bits<K>() + 1, gamma1<K>()>(out, buf);
 }
 
 // FIPS 204, Algorithm 29 (`SampleInBall`).
@@ -1295,22 +1347,95 @@ inline void scalar_sample_in_ball_vartime(scalar *out, const uint8_t *seed,
   }
 }
 
-// FIPS 204, Algorithm 32 (`ExpandA`).
+template <int K, int L>
+inline void matrix_expand_step(scalar *out, const uint8_t rho[kRhoBytes],
+                               int index) {
+  BORINGSSL_keccak_st keccak_ctx;
+  BORINGSSL_keccak_init(&keccak_ctx, boringssl_shake128);
+  BORINGSSL_keccak_absorb(&keccak_ctx, rho, kRhoBytes);
+  uint8_t index_buf[2];
+  index_buf[0] = static_cast<uint8_t>(index % L);
+  index_buf[1] = static_cast<uint8_t>(index / L);
+  BORINGSSL_keccak_absorb(&keccak_ctx, index_buf, 2);
+  scalar_from_keccak_vartime(out, &keccak_ctx);
+}
+
+#if defined(HAVE_KECCAK_X2)
+template <int K, int L>
+inline void matrix_expand_step_x2(matrix<K, L> *out,
+                                  const uint8_t rho[kRhoBytes], int index) {
+  BORINGSSL_keccak_st keccak_ctx[2];
+  BORINGSSL_keccak_init(&keccak_ctx[0], boringssl_shake128);
+  BORINGSSL_keccak_init(&keccak_ctx[1], boringssl_shake128);
+  BORINGSSL_keccak_absorb(&keccak_ctx[0], rho, kRhoBytes);
+  BORINGSSL_keccak_absorb(&keccak_ctx[1], rho, kRhoBytes);
+  uint8_t index_buf[2];
+  index_buf[0] = static_cast<uint8_t>(index % L);
+  index_buf[1] = static_cast<uint8_t>(index / L);
+  BORINGSSL_keccak_absorb(&keccak_ctx[0], index_buf, 2);
+  index_buf[0] = static_cast<uint8_t>((index + 1) % L);
+  index_buf[1] = static_cast<uint8_t>((index + 1) / L);
+  BORINGSSL_keccak_absorb(&keccak_ctx[1], index_buf, 2);
+
+  scalar *outs[] = {&out->v[index / L][index % L],
+                    &out->v[(index + 1) / L][(index + 1) % L]};
+  scalar_from_keccak_vartime_x2(outs, keccak_ctx);
+}
+#endif
+
 template <int K, int L>
 inline void matrix_expand(matrix<K, L> *out, const uint8_t rho[kRhoBytes]) {
   static_assert(K <= 0x100, "K must fit in 8 bits");
   static_assert(L <= 0x100, "L must fit in 8 bits");
 
-  uint8_t derived_seed[kRhoBytes + 2];
-  OPENSSL_memcpy(derived_seed, rho, kRhoBytes);
-  for (int i = 0; i < K; i++) {
-    for (int j = 0; j < L; j++) {
-      derived_seed[kRhoBytes + 1] = (uint8_t)i;
-      derived_seed[kRhoBytes] = (uint8_t)j;
-      scalar_from_keccak_vartime(&out->v[i][j], derived_seed);
-    }
+  int index = 0;
+#if defined(HAVE_KECCAK_X2)
+  for (; index + 2 <= K * L; index += 2) {
+    matrix_expand_step_x2(out, rho, index);
+  }
+#endif
+
+  for (; index < K * L; index++) {
+    matrix_expand_step<K, L>(&out->v[index / L][index % L], rho, index);
   }
 }
+
+template <int K>
+inline void vector_expand_short_step(scalar *out,
+                                     const uint8_t sigma[kSigmaBytes],
+                                     int index) {
+  BORINGSSL_keccak_st keccak_ctx;
+  BORINGSSL_keccak_init(&keccak_ctx, boringssl_shake256);
+  BORINGSSL_keccak_absorb(&keccak_ctx, sigma, kSigmaBytes);
+  uint8_t index_buf[2];
+  index_buf[0] = static_cast<uint8_t>(index);
+  index_buf[1] = 0;
+  BORINGSSL_keccak_absorb(&keccak_ctx, index_buf, 2);
+  scalar_uniform<eta<K>()>(out, &keccak_ctx);
+}
+
+#if defined(HAVE_KECCAK_X2)
+template <int K>
+inline void vector_expand_short_step_x2(scalar *out0, scalar *out1,
+                                        const uint8_t sigma[kSigmaBytes],
+                                        int index) {
+  BORINGSSL_keccak_st keccak_ctx[2];
+  BORINGSSL_keccak_init(&keccak_ctx[0], boringssl_shake256);
+  BORINGSSL_keccak_init(&keccak_ctx[1], boringssl_shake256);
+  BORINGSSL_keccak_absorb(&keccak_ctx[0], sigma, kSigmaBytes);
+  BORINGSSL_keccak_absorb(&keccak_ctx[1], sigma, kSigmaBytes);
+  uint8_t index_buf[2];
+  index_buf[0] = static_cast<uint8_t>(index);
+  index_buf[1] = 0;
+  BORINGSSL_keccak_absorb(&keccak_ctx[0], index_buf, 2);
+  index_buf[0] = static_cast<uint8_t>(index + 1);
+  index_buf[1] = 0;
+  BORINGSSL_keccak_absorb(&keccak_ctx[1], index_buf, 2);
+
+  scalar *outs[] = {out0, out1};
+  scalar_uniform_x2<eta<K>()>(outs, keccak_ctx);
+}
+#endif
 
 // FIPS 204, Algorithm 33 (`ExpandS`).
 template <int K, int L>
@@ -1320,34 +1445,37 @@ inline void vector_expand_short(vector<L> *s1, vector<K> *s2,
   static_assert(L <= 0x100, "L must fit in 8 bits");
   static_assert(K + L <= 0x100, "K+L must fit in 8 bits");
 
-  uint8_t derived_seed[kSigmaBytes + 2];
-  OPENSSL_memcpy(derived_seed, sigma, kSigmaBytes);
-  derived_seed[kSigmaBytes] = 0;
-  derived_seed[kSigmaBytes + 1] = 0;
+  scalar *all_scalars[K + L];
   for (int i = 0; i < L; i++) {
-    scalar_uniform<eta<K>()>(&s1->v[i], derived_seed);
-    ++derived_seed[kSigmaBytes];
+    all_scalars[i] = &s1->v[i];
   }
   for (int i = 0; i < K; i++) {
-    scalar_uniform<eta<K>()>(&s2->v[i], derived_seed);
-    ++derived_seed[kSigmaBytes];
+    all_scalars[L + i] = &s2->v[i];
+  }
+
+  int index = 0;
+#if defined(HAVE_KECCAK_X2)
+  for (; index + 2 <= K + L; index += 2) {
+    vector_expand_short_step_x2<K>(all_scalars[index], all_scalars[index + 1],
+                                   sigma, index);
+  }
+#endif
+
+  for (; index < K + L; index++) {
+    vector_expand_short_step<K>(all_scalars[index], sigma, index);
   }
 }
 
 // FIPS 204, Algorithm 34 (`ExpandMask`).
 template <int K, int L>
 inline void vector_expand_mask(vector<L> *out,
-                               const uint8_t seed[kRhoPrimeBytes],
+                               const uint8_t rho_prime[kRhoPrimeBytes],
                                size_t kappa) {
   assert(kappa + L <= 0x10000);
 
-  uint8_t derived_seed[kRhoPrimeBytes + 2];
-  OPENSSL_memcpy(derived_seed, seed, kRhoPrimeBytes);
   for (int i = 0; i < L; i++) {
     size_t index = kappa + i;
-    derived_seed[kRhoPrimeBytes] = index & 0xFF;
-    derived_seed[kRhoPrimeBytes + 1] = (index >> 8) & 0xFF;
-    scalar_sample_mask<K>(&out->v[i], derived_seed);
+    scalar_sample_mask<K>(&out->v[i], rho_prime, index);
   }
 }
 
@@ -1358,29 +1486,18 @@ inline void vector_expand_mask(vector<L> *out,
 // Encodes an entire vector into 32*K*`bits` bytes. Note that since 256
 // (kDegree) is divisible by 8, the individual vector entries will always fill a
 // whole number of bytes, so we do not need to worry about bit packing here.
-template <int K>
-inline void vector_encode(uint8_t *out, const vector<K> *a, int bits) {
-  if (bits == 4) {
-    for (int i = 0; i < K; i++) {
-      scalar_encode_4(out + i * bits * kDegree / 8, &a->v[i]);
-    }
-  } else if (bits == 6) {
-    for (int i = 0; i < K; i++) {
-      scalar_encode_6(out + i * bits * kDegree / 8, &a->v[i]);
-    }
-  } else {
-    assert(bits == 10);
-    for (int i = 0; i < K; i++) {
-      scalar_encode_10(out + i * bits * kDegree / 8, &a->v[i]);
-    }
+template <int bits, int K>
+inline void vector_encode(uint8_t *out, const vector<K> *a) {
+  for (int i = 0; i < K; i++) {
+    scalar_encode<bits>(out + i * bits * kDegree / 8, &a->v[i]);
   }
 }
 
 // FIPS 204, Algorithm 18 (`SimpleBitUnpack`).
-template <int K>
-inline void vector_decode_10(vector<K> *out, const uint8_t *in) {
+template <int bits, int K>
+inline void vector_decode(vector<K> *out, const uint8_t *in) {
   for (int i = 0; i < K; i++) {
-    scalar_decode_10(&out->v[i], in + i * 10 * kDegree / 8);
+    scalar_decode<bits>(&out->v[i], in + i * bits * kDegree / 8);
   }
 }
 
@@ -1389,20 +1506,37 @@ inline void vector_decode_10(vector<K> *out, const uint8_t *in) {
 // Encodes an entire vector into 32*L*`bits` bytes. Note that since 256
 // (kDegree) is divisible by 8, the individual vector entries will always fill a
 // whole number of bytes, so we do not need to worry about bit packing here.
-template <int X>
-inline void vector_encode_signed(uint8_t *out, const vector<X> *a, int bits,
-                                 uint32_t max) {
+template <int bits, uint32_t max, int X>
+inline void vector_encode_signed(uint8_t *out, const vector<X> *a) {
   for (int i = 0; i < X; i++) {
-    scalar_encode_signed(out + i * bits * kDegree / 8, &a->v[i], bits, max);
+    scalar_encode_signed<bits, max>(out + i * bits * kDegree / 8, &a->v[i]);
   }
 }
 
-template <int X>
-inline int vector_decode_signed(vector<X> *out, const uint8_t *in, int bits,
-                                uint32_t max) {
+// `vector_encode_signed_ntt` behaves like `vector_encode_signed` but takes its
+// input in NTT form. This is only used by the testing-only `skEncode` and
+// `skDecode` functions and is not performance-sensitive.
+template <int bits, uint32_t max, int X>
+inline void vector_encode_signed_ntt(uint8_t *out, const vector<X> *a_ntt) {
+  vector<X> a = *a_ntt;
+  vector_inverse_ntt_montgomery(&a);
+  // `vector_inverse_ntt_montgomery` adds an extra factor of R, which we must
+  // cancel with a Montgomery reduction.
   for (int i = 0; i < X; i++) {
-    if (!scalar_decode_signed(&out->v[i], in + i * bits * kDegree / 8, bits,
-                              max)) {
+    for (int j = 0; j < kDegree; j++) {
+      a.v[i].c[j] = reduce_montgomery(a.v[i].c[j]);
+    }
+  }
+
+  vector_encode_signed<bits, max>(out, &a);
+}
+
+// FIPS 204, Algorithm 19 (`BitUnpack`).
+template <int bits, uint32_t max, int X>
+inline int vector_decode_signed(vector<X> *out, const uint8_t *in) {
+  for (int i = 0; i < X; i++) {
+    if (!scalar_decode_signed<bits, max>(&out->v[i],
+                                         in + i * bits * kDegree / 8)) {
       return 0;
     }
   }
@@ -1412,7 +1546,7 @@ inline int vector_decode_signed(vector<X> *out, const uint8_t *in, int bits,
 // FIPS 204, Algorithm 28 (`w1Encode`).
 template <int K>
 inline void w1_encode(uint8_t out[w1_bytes<K>()], const vector<K> *w1) {
-  vector_encode(out, w1, w1_coeffs_bits<K>());
+  vector_encode<w1_coeffs_bits<K>()>(out, w1);
 }
 
 // FIPS 204, Algorithm 20 (`HintBitPack`).
@@ -1475,9 +1609,9 @@ template <int K, int L>
 struct private_key {
   public_key<K> pub;
   uint8_t k[kKBytes];
-  vector<L> s1;
-  vector<K> s2;
-  vector<K> t0;
+  vector<L> s1_ntt;
+  vector<K> s2_ntt;
+  vector<K> t0_ntt;
 };
 
 template <int K, int L>
@@ -1498,7 +1632,7 @@ inline int mldsa_marshal_public_key(CBB *out, const public_key<K> *pub) {
   if (!CBB_add_space(out, &vectork_output, 320 * K)) {
     return 0;
   }
-  vector_encode(vectork_output, &pub->t1, 10);
+  vector_encode<10>(vectork_output, &pub->t1);
 
   return 1;
 }
@@ -1516,7 +1650,7 @@ inline int mldsa_parse_public_key(public_key<K> *pub, CBS *in) {
   if (!CBS_get_bytes(in, &t1_bytes, 320 * K) || CBS_len(in) != 0) {
     return 0;
   }
-  vector_decode_10(&pub->t1, CBS_data(&t1_bytes));
+  vector_decode<10>(&pub->t1, CBS_data(&t1_bytes));
 
   // Compute pre-cached values.
   BORINGSSL_keccak(pub->public_key_hash, sizeof(pub->public_key_hash),
@@ -1541,21 +1675,21 @@ inline int mldsa_marshal_private_key(CBB *out, const private_key<K, L> *priv) {
   if (!CBB_add_space(out, &vectorl_output, scalar_bytes * L)) {
     return 0;
   }
-  vector_encode_signed(vectorl_output, &priv->s1, plus_minus_eta_bitlen<K>(),
-                       eta<K>());
+  vector_encode_signed_ntt<plus_minus_eta_bitlen<K>(), eta<K>()>(vectorl_output,
+                                                                 &priv->s1_ntt);
 
   uint8_t *s2_output;
   if (!CBB_add_space(out, &s2_output, scalar_bytes * K)) {
     return 0;
   }
-  vector_encode_signed(s2_output, &priv->s2, plus_minus_eta_bitlen<K>(),
-                       eta<K>());
+  vector_encode_signed_ntt<plus_minus_eta_bitlen<K>(), eta<K>()>(s2_output,
+                                                                 &priv->s2_ntt);
 
   uint8_t *t0_output;
   if (!CBB_add_space(out, &t0_output, 416 * K)) {
     return 0;
   }
-  vector_encode_signed(t0_output, &priv->t0, 13, 1 << 12);
+  vector_encode_signed_ntt<13, (1 << 12)>(t0_output, &priv->t0_ntt);
 
   return 1;
 }
@@ -1571,18 +1705,17 @@ inline int mldsa_parse_private_key(private_key<K, L> *priv, CBS *in) {
       !CBS_copy_bytes(in, priv->k, sizeof(priv->k)) ||
       !CBS_get_bytes(in, &public_key_hash, kTrBytes) ||
       !CBS_get_bytes(in, &s1_bytes, scalar_bytes * L) ||
-      !vector_decode_signed(&priv->s1, CBS_data(&s1_bytes),
-                            plus_minus_eta_bitlen<K>(), eta<K>()) ||
+      !vector_decode_signed<plus_minus_eta_bitlen<K>(), eta<K>()>(
+          &priv->s1_ntt, CBS_data(&s1_bytes)) ||
       !CBS_get_bytes(in, &s2_bytes, scalar_bytes * K) ||
-      !vector_decode_signed(&priv->s2, CBS_data(&s2_bytes),
-                            plus_minus_eta_bitlen<K>(), eta<K>()) ||
-      !CBS_get_bytes(in, &t0_bytes, 416 * K) ||
-      // Note: Decoding 13 bits into (-2^12, 2^12] cannot fail.
-      !vector_decode_signed(&priv->t0, CBS_data(&t0_bytes), 13, 1 << 12)) {
+      !vector_decode_signed<plus_minus_eta_bitlen<K>(), eta<K>()>(
+          &priv->s2_ntt, CBS_data(&s2_bytes)) ||
+      !CBS_get_bytes(in, &t0_bytes, 416 * K)) {
     return 0;
   }
 
-  // Compute `t1`, which is not in the `skDecode` input.
+  // Compute `t1`, which is not in the `skDecode` input. This also computes
+  // `t0_ntt` and converts `s1_ntt` and `s2_ntt` to NTT form.
   uint8_t unused[public_key_bytes<K>()];
   if (!mldsa_finish_keygen(unused, priv)) {
     return 0;
@@ -1591,7 +1724,7 @@ inline int mldsa_parse_private_key(private_key<K, L> *priv, CBS *in) {
   // As a side effect of computing `t1`, we also compute `t0` and
   // `public_key_hash`. Check they match the received bytes.
   uint8_t t0_computed[416 * K];
-  vector_encode_signed(t0_computed, &priv->t0, 13, 1 << 12);
+  vector_encode_signed_ntt<13, (1 << 12)>(t0_computed, &priv->t0_ntt);
   if (!CBS_mem_equal(&public_key_hash, priv->pub.public_key_hash,
                      sizeof(priv->pub.public_key_hash)) ||
       !CBS_mem_equal(&t0_bytes, t0_computed, sizeof(t0_computed))) {
@@ -1612,8 +1745,8 @@ inline int mldsa_marshal_signature(CBB *out, const signature<K, L> *sign) {
   if (!CBB_add_space(out, &vectorl_output, scalar_le_gamma1_bytes<K>() * L)) {
     return 0;
   }
-  vector_encode_signed(vectorl_output, &sign->z, gamma1_bits<K>() + 1,
-                       gamma1<K>());
+  vector_encode_signed<gamma1_bits<K>() + 1, gamma1<K>()>(vectorl_output,
+                                                          &sign->z);
 
   uint8_t *hint_output;
   if (!CBB_add_space(out, &hint_output, omega<K>() + K)) {
@@ -1632,8 +1765,8 @@ inline int mldsa_parse_signature(signature<K, L> *sign, CBS *in) {
   if (!CBS_copy_bytes(in, sign->c_tilde, sizeof(sign->c_tilde)) ||
       !CBS_get_bytes(in, &z_bytes, scalar_le_gamma1_bytes<K>() * L) ||
       // Note: Decoding b+1 bits into (-2^b, 2^b] cannot fail.
-      !vector_decode_signed(&sign->z, CBS_data(&z_bytes), gamma1_bits<K>() + 1,
-                            gamma1<K>()) ||
+      !vector_decode_signed<gamma1_bits<K>() + 1, gamma1<K>()>(
+          &sign->z, CBS_data(&z_bytes)) ||
       !CBS_get_bytes(in, &hint_bytes, omega<K>() + K) ||
       !hint_bit_unpack(&sign->h, CBS_data(&hint_bytes))) {
     return 0;
@@ -1644,6 +1777,9 @@ inline int mldsa_parse_signature(signature<K, L> *sign, CBS *in) {
 
 // FIPS 204, Algorithm 6 (`ML-DSA.KeyGen_internal`), steps 3 and 5–11.
 // Returns 1 on success and 0 on failure.
+//
+// On input, `priv->s1_ntt` and `priv->s2_ntt` are not yet in NTT form. They are
+// converted to NTT form by this function.
 template <int K, int L>
 inline int mldsa_finish_keygen(
     uint8_t out_encoded_public_key[public_key_bytes<K>()],
@@ -1653,7 +1789,6 @@ inline int mldsa_finish_keygen(
   struct Values {
     enum { kAllowUniquePtr = true };
     matrix<K, L> a_ntt;
-    vector<L> s1_ntt;
     vector<K> t;
   };
   auto values = MakeUnique<Values>();
@@ -1664,16 +1799,17 @@ inline int mldsa_finish_keygen(
   // Step 3.
   matrix_expand(&values->a_ntt, priv->pub.rho);
 
-  // Step 5.
-  OPENSSL_memcpy(&values->s1_ntt, &priv->s1, sizeof(values->s1_ntt));
-  vector_ntt(&values->s1_ntt);
+  // Step 5. Note that, on input, `s1_ntt` and `s2_ntt` are not yet in NTT form,
+  // but this function is responsible for converting them to NTT.
+  vector_ntt(&priv->s1_ntt);
+  matrix_mult_montgomery(&values->t, &values->a_ntt, &priv->s1_ntt);
+  vector_inverse_ntt_montgomery(&values->t);
+  vector_add(&values->t, &values->t, &priv->s2_ntt);
+  vector_ntt(&priv->s2_ntt);
 
-  matrix_mult(&values->t, &values->a_ntt, &values->s1_ntt);
-  vector_inverse_ntt(&values->t);
-  vector_add(&values->t, &values->t, &priv->s2);
-
-  // Step 6-7.
-  vector_power2_round(&priv->pub.t1, &priv->t0, &values->t);
+  // Step 6-7. We store t0 in NTT form.
+  vector_power2_round(&priv->pub.t1, &priv->t0_ntt, &values->t);
+  vector_ntt(&priv->t0_ntt);
   // t1 is public.
   CONSTTIME_DECLASSIFY(&priv->pub.t1, sizeof(priv->pub.t1));
 
@@ -1715,8 +1851,9 @@ inline int mldsa_generate_key_external_entropy_no_self_test(
   CONSTTIME_DECLASSIFY(rho, kRhoBytes);
   OPENSSL_memcpy(priv->pub.rho, rho, sizeof(priv->pub.rho));
   OPENSSL_memcpy(priv->k, k, sizeof(priv->k));
-  // Step 4. This is independent of A (step 3) and can be done first.
-  vector_expand_short(&priv->s1, &priv->s2, sigma);
+  // Steps 4. This is independent of A (step 3) and can be done first.
+  // `mldsa_finish_keygen` will convert `s1_ntt` and `s2_ntt` into NTT from.
+  vector_expand_short(&priv->s1_ntt, &priv->s2_ntt, sigma);
   // Steps 3 and 5-11.
   return mldsa_finish_keygen(out_encoded_public_key, priv);
 }
@@ -1751,9 +1888,6 @@ inline int mldsa_sign_mu_no_self_test(
   struct Values {
     enum { kAllowUniquePtr = true };
     signature<K, L> sign;
-    vector<L> s1_ntt;
-    vector<K> s2_ntt;
-    vector<K> t0_ntt;
     matrix<K, L> a_ntt;
     vector<L> y;
     vector<K> w;
@@ -1765,15 +1899,6 @@ inline int mldsa_sign_mu_no_self_test(
   if (values == nullptr) {
     return 0;
   }
-  OPENSSL_memcpy(&values->s1_ntt, &priv->s1, sizeof(values->s1_ntt));
-  vector_ntt(&values->s1_ntt);
-
-  OPENSSL_memcpy(&values->s2_ntt, &priv->s2, sizeof(values->s2_ntt));
-  vector_ntt(&values->s2_ntt);
-
-  OPENSSL_memcpy(&values->t0_ntt, &priv->t0, sizeof(values->t0_ntt));
-  vector_ntt(&values->t0_ntt);
-
   matrix_expand(&values->a_ntt, priv->pub.rho);
 
   // kappa must not exceed 2**16/L = 13107. But the probability of it
@@ -1785,8 +1910,8 @@ inline int mldsa_sign_mu_no_self_test(
     OPENSSL_memcpy(y_ntt, &values->y, sizeof(*y_ntt));
     vector_ntt(y_ntt);
 
-    matrix_mult(&values->w, &values->a_ntt, y_ntt);
-    vector_inverse_ntt(&values->w);
+    matrix_mult_montgomery(&values->w, &values->a_ntt, y_ntt);
+    vector_inverse_ntt_montgomery(&values->w);
 
     vector_high_bits(&values->w1, &values->w);
     uint8_t w1_encoded[w1_bytes<K>()];
@@ -1803,10 +1928,10 @@ inline int mldsa_sign_mu_no_self_test(
                                   sizeof(values->sign.c_tilde), tau<K>());
     scalar_ntt(&c_ntt);
 
-    vector_mult_scalar(&values->cs1, &values->s1_ntt, &c_ntt);
-    vector_inverse_ntt(&values->cs1);
-    vector_mult_scalar(&values->cs2, &values->s2_ntt, &c_ntt);
-    vector_inverse_ntt(&values->cs2);
+    vector_mult_scalar_montgomery(&values->cs1, &priv->s1_ntt, &c_ntt);
+    vector_inverse_ntt_montgomery(&values->cs1);
+    vector_mult_scalar_montgomery(&values->cs2, &priv->s2_ntt, &c_ntt);
+    vector_inverse_ntt_montgomery(&values->cs2);
 
     vector_add(&values->sign.z, &values->y, &values->cs1);
 
@@ -1837,8 +1962,8 @@ inline int mldsa_sign_mu_no_self_test(
     }
 
     vector<K> *ct0 = &values->w1;
-    vector_mult_scalar(ct0, &values->t0_ntt, &c_ntt);
-    vector_inverse_ntt(ct0);
+    vector_mult_scalar_montgomery(ct0, &priv->t0_ntt, &c_ntt);
+    vector_inverse_ntt_montgomery(ct0);
     vector_make_hint(&values->sign.h, ct0, &values->cs2, &values->w);
 
     // See above.
@@ -1987,16 +2112,16 @@ inline int mldsa_verify_mu_no_self_test(
   OPENSSL_memcpy(&values->z_ntt, &values->sign.z, sizeof(values->z_ntt));
   vector_ntt(&values->z_ntt);
 
-  matrix_mult(&values->az_ntt, &values->a_ntt, &values->z_ntt);
+  matrix_mult_montgomery(&values->az_ntt, &values->a_ntt, &values->z_ntt);
 
   vector_scale_power2_round(&values->ct1_ntt, &pub->t1);
   vector_ntt(&values->ct1_ntt);
 
-  vector_mult_scalar(&values->ct1_ntt, &values->ct1_ntt, &c_ntt);
+  vector_mult_scalar_montgomery(&values->ct1_ntt, &values->ct1_ntt, &c_ntt);
 
   vector<K> *const w1 = &values->az_ntt;
   vector_sub(w1, &values->az_ntt, &values->ct1_ntt);
-  vector_inverse_ntt(w1);
+  vector_inverse_ntt_montgomery(w1);
 
   vector_use_hint_vartime(w1, &values->sign.h, w1);
   uint8_t w1_encoded[w1_bytes<K>()];
