@@ -30,5 +30,17 @@ git fetch "$REMOTE_NAME" "$UPSTREAM_BRANCH"
 echo "Merging $REMOTE_NAME/$UPSTREAM_BRANCH..."
 git merge --no-edit "$REMOTE_NAME/$UPSTREAM_BRANCH"
 
+# The fork freezes a de-ELF'd copy of two upstream fiat P-256 ADX asm bodies in
+# src/win_fiat/ (for the win64 build). Those live at a non-colliding path, so an
+# upstream regeneration of the originals merges cleanly and would NOT raise a
+# git conflict — it would silently leave our copy stale. Catch that here.
+echo
+echo "Checking win64 fiat shim against upstream..."
+if ! scripts/check-win-fiat.sh; then
+    echo
+    echo "WARNING: src/win_fiat/ drifted from upstream (see above). The merge is" >&2
+    echo "done, but regenerate the de-ELF'd body before shipping a win64 build." >&2
+fi
+
 echo
 echo "Done. Run 'zig build test' to verify the new upstream still builds."

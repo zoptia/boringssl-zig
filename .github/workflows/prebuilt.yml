@@ -40,17 +40,17 @@ jobs:
           - { os: ubuntu-latest,    label: linux-x86_64,         target: x86_64-linux-gnu,     extra: "",            archive_ext: a,   run_tests: true  }
           - { os: ubuntu-24.04-arm, label: linux-aarch64,        target: aarch64-linux-gnu,    extra: "",            archive_ext: a,   run_tests: true  }
           - { os: macos-latest,     label: macos-aarch64,        target: aarch64-macos,        extra: "",            archive_ext: a,   run_tests: true  }
-          # Windows x86_64 must be built -Dasm=false. Reason: third_party/fiat/
-          # asm/fiat_p256_adx_{mul,sqr}.S only emits its body under
-          # (__APPLE__ || __ELF__), but the C++ callers in BoringSSL get
-          # emitted on mingw (__GNUC__ && __x86_64__). With asm enabled,
-          # the static .a contains dangling references to fiat_p256_adx_mul/
-          # sqr that downstream consumers can't link. -Dasm=false defines
-          # OPENSSL_NO_ASM, which suppresses the callers and keeps the .a
-          # self-contained at the cost of crypto perf on Windows. (.lib
-          # would behave the same; same flag.)
-          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "-Dasm=false", archive_ext: a,   run_tests: false, use_nasm: false }
-          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "-Dasm=false", archive_ext: lib, run_tests: false, use_nasm: false }
+          # Windows x86_64 ships with asm ON. Upstream emits the fiat P-256 ADX
+          # field ops only under (__APPLE__ || __ELF__) with no nasm variant, but
+          # the C++ callers are emitted on mingw/clang (__GNUC__ && OPENSSL_X86_64)
+          # — and the decl lacks sysv_abi, so a naive build would also mis-call
+          # the SysV body with the MS-x64 convention. src/win_fiat/ supplies a
+          # fork-owned de-ELF'd COFF build of each op wrapped in a Win64->SysV shim
+          # (see build.zig), so the prebuilt .a/.lib both define the symbols and
+          # call them correctly — downstream consumers link cleanly and get the
+          # accelerated path. NASM assembles the remaining perlasm.
+          - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            archive_ext: a,   run_tests: false, use_nasm: true  }
+          - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "",            archive_ext: lib, run_tests: false, use_nasm: true  }
           # Cross-only — no native ARM Windows runner on GitHub yet (cross-
           # build from Linux works because the .S files are GAS-format).
           # MSVC ARM omitted — cross from Linux/macOS to -windows-msvc can't

@@ -149,6 +149,16 @@ fn collectAsm(
     return list;
 }
 
+/// True if the collected asm already defines the fiat P-256 ADX field ops
+/// (e.g. a future upstream nasm variant). When false on the win64 nasm path,
+/// build.zig supplies its own fork-owned COFF build from src/win_fiat/.
+fn containsFiatAdx(files: []const []const u8) bool {
+    for (files) |f| {
+        if (std.mem.indexOf(u8, f, "fiat_p256_adx") != null) return true;
+    }
+    return false;
+}
+
 fn baseCxxFlags(b: *std.Build, target: std.Target, asm_disabled: bool, no_cxx_runtime: bool, sysroot: ?[]const u8) []const []const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     list.appendSlice(b.allocator, &.{
@@ -370,6 +380,28 @@ fn buildFromSource(
                     .language = .assembly_with_preprocessor,
                 });
             }
+        }
+        // win64 fiat P-256 ADX shim. Upstream ships these two field ops only as
+        // `__APPLE__ || __ELF__`-guarded GAS (empty on PE/COFF) with no nasm
+        // variant, so the nasm path above defines nothing — yet p256_internal.h
+        // references fiat_p256_adx_{mul,sqr} on win64 under `__GNUC__ &&
+        // OPENSSL_X86_64` (clang satisfies both). Worse, that C decl is NOT
+        // `__attribute__((sysv_abi))` (unlike curve25519's), so clang calls them
+        // with the Microsoft x64 convention while the fiat body is System V.
+        // src/win_fiat/ supplies a fork-owned de-ELF'd COFF build of each op,
+        // wrapped in a Win64->SysV shim, so win64 keeps asm/AES-NI on (no
+        // -Dasm=false) AND computes correctly. scripts/check-win-fiat.sh guards
+        // the de-ELF'd body against upstream drift. The `!containsFiatAdx` guard
+        // makes a future upstream nasm variant auto-win instead of duplicating.
+        if (use_nasm and t.cpu.arch == .x86_64 and !containsFiatAdx(asm_list.items)) {
+            crypto_mod.addCSourceFiles(.{
+                .files = &.{
+                    "src/win_fiat/fiat_p256_adx_mul.S",
+                    "src/win_fiat/fiat_p256_adx_sqr.S",
+                },
+                .flags = asm_flags,
+                .language = .assembly_with_preprocessor,
+            });
         }
     }
 
