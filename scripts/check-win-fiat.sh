@@ -48,7 +48,7 @@ for op in mul sqr; do
 done
 
 # OBSOLETE: has upstream made the shim (or the whole file) unnecessary?
-disp="crypto/fipsmodule/ec/p256_internal.h"
+disp="third_party/fiat/p256_64.h"
 if grep -B1 -A3 'fiat_p256_adx_mul' "$disp" | grep -q 'sysv_abi'; then
   echo "notice: $disp now declares fiat_p256_adx_* with __attribute__((sysv_abi));"
   echo "        clang will marshal the ABI itself — the Win64->SysV shim in"
