@@ -2927,11 +2927,6 @@ struct SSL3_STATE {
   // HelloRetryRequest message.
   bool used_hello_retry_request : 1;
 
-  // was_key_usage_invalid is whether the handshake succeeded despite using a
-  // TLS mode which was incompatible with the leaf certificate's keyUsage
-  // extension.
-  bool was_key_usage_invalid : 1;
-
   // server_sent_requested_padding is true iff a client requested padding
   // through the server padding extension, and the server sent back the
   // requested amount of padding.
@@ -3500,11 +3495,6 @@ struct SSL_CONFIG {
   // channel_id_enabled is copied from the `SSL_CTX`. For a server, it means
   // that we'll accept Channel IDs from clients. It is ignored on the client.
   bool channel_id_enabled : 1;
-
-  // If enforce_rsa_key_usage is true, the handshake will fail if the
-  // keyUsage extension is present and incompatible with the TLS usage.
-  // This field is not read until after certificate verification.
-  bool enforce_rsa_key_usage : 1;
 
   // retain_only_sha256_of_client_certs is true if we should compute the SHA256
   // hash of the peer's certificate and then discard it to save memory and
@@ -4281,7 +4271,7 @@ struct ssl_st {
   // renegotiate_mode controls how peer renegotiation attempts are handled.
   ssl_renegotiate_mode_t renegotiate_mode = ssl_renegotiate_never;
 
-  // server is true iff the this SSL* is the server half. Note: before the SSL*
+  // server is true iff this SSL* is the server half. Note: before the SSL*
   // is initialized by either SSL_set_accept_state or SSL_set_connect_state,
   // the side is not determined. In this state, server is always false.
   bool server : 1;
