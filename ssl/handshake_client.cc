@@ -83,17 +83,9 @@ static void ssl_get_client_disabled(const SSL_HANDSHAKE *hs,
   }
 }
 
-static bool ssl_add_tls13_cipher(CBB *cbb, uint16_t cipher_id,
-                                 ssl_compliance_policy_t policy) {
-  if (ssl_tls13_cipher_meets_policy(cipher_id, policy)) {
-    return CBB_add_u16(cbb, cipher_id);
-  }
-  return true;
-}
-
 static bool ssl_write_client_cipher_list(const SSL_HANDSHAKE *hs, CBB *out,
                                          ssl_client_hello_type_t type) {
-  const SSL *const ssl = hs->ssl;
+  const SSLImpl *const ssl = hs->ssl;
   uint32_t mask_a, mask_k;
   ssl_get_client_disabled(hs, &mask_a, &mask_k);
 
@@ -108,37 +100,10 @@ static bool ssl_write_client_cipher_list(const SSL_HANDSHAKE *hs, CBB *out,
     return false;
   }
 
-  // Add TLS 1.3 ciphers. Order ChaCha20-Poly1305 relative to AES-GCM based on
-  // hardware support.
+  // Add TLS 1.3 ciphers in configured preference order.
   if (hs->max_version >= TLS1_3_VERSION) {
-    static const uint16_t kCiphersNoAESHardware[] = {
-        SSL_CIPHER_CHACHA20_POLY1305_SHA256,
-        SSL_CIPHER_AES_128_GCM_SHA256,
-        SSL_CIPHER_AES_256_GCM_SHA384,
-    };
-    static const uint16_t kCiphersAESHardware[] = {
-        SSL_CIPHER_AES_128_GCM_SHA256,
-        SSL_CIPHER_AES_256_GCM_SHA384,
-        SSL_CIPHER_CHACHA20_POLY1305_SHA256,
-    };
-    static const uint16_t kCiphersCNSA[] = {
-        SSL_CIPHER_AES_256_GCM_SHA384,
-        SSL_CIPHER_AES_128_GCM_SHA256,
-        SSL_CIPHER_CHACHA20_POLY1305_SHA256,
-    };
-
-    const bool has_aes_hw = ssl->config->aes_hw_override
-                                ? ssl->config->aes_hw_override_value
-                                : EVP_has_aes_hardware();
-    const bssl::Span<const uint16_t> ciphers =
-        ssl->config->compliance_policy == ssl_compliance_policy_cnsa_202407
-            ? bssl::Span<const uint16_t>(kCiphersCNSA)
-            : (has_aes_hw ? bssl::Span<const uint16_t>(kCiphersAESHardware)
-                          : bssl::Span<const uint16_t>(kCiphersNoAESHardware));
-
-    for (auto cipher : ciphers) {
-      if (!ssl_add_tls13_cipher(&child, cipher,
-                                ssl->config->compliance_policy)) {
+    for (const SSL_CIPHER *cipher : hs->config->tls13_cipher_list.ciphers()) {
+      if (!CBB_add_u16(&child, SSL_CIPHER_get_protocol_id(cipher))) {
         return false;
       }
     }
@@ -182,7 +147,7 @@ bool ssl_write_client_hello_without_extensions(const SSL_HANDSHAKE *hs,
                                                CBB *cbb,
                                                ssl_client_hello_type_t type,
                                                bool empty_session_id) {
-  const SSL *const ssl = hs->ssl;
+  const SSLImpl *const ssl = hs->ssl;
   CBB child;
   if (!CBB_add_u16(cbb, hs->client_version) ||
       !CBB_add_bytes(cbb,
@@ -217,7 +182,7 @@ bool ssl_write_client_hello_without_extensions(const SSL_HANDSHAKE *hs,
 }
 
 bool ssl_add_client_hello(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   ScopedCBB cbb;
   CBB body;
   ssl_client_hello_type_t type = hs->selected_ech_config
@@ -274,7 +239,7 @@ static bool parse_server_version(const SSL_HANDSHAKE *hs, uint16_t *out_version,
 // offer early data, and some other reason code otherwise.
 static ssl_early_data_reason_t should_offer_early_data(
     const SSL_HANDSHAKE *hs) {
-  const SSL *const ssl = hs->ssl;
+  const SSLImpl *const ssl = hs->ssl;
   assert(!ssl->server);
   if (!ssl->enable_early_data) {
     return ssl_early_data_disabled;
@@ -351,7 +316,7 @@ bool ssl_accepts_server_certificate_auth(const SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_start_connect(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
 
   ssl_do_info_callback(ssl, SSL_CB_HANDSHAKE_START, 1);
   // `session_reused` must be reset in case this is a renegotiation.
@@ -455,7 +420,7 @@ static enum ssl_hs_wait_t do_start_connect(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_enter_early_data(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   if (!hs->early_data_offered) {
     hs->state = state_read_server_hello;
     return ssl_hs_ok;
@@ -474,7 +439,7 @@ static enum ssl_hs_wait_t do_enter_early_data(SSL_HANDSHAKE *hs) {
 
 static enum ssl_hs_wait_t do_early_reverify_server_certificate(
     SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   if (ssl->ctx->reverify_on_resume) {
     // Don't send an alert on error. The alert would be in the clear, which the
     // server is not expecting anyway. Alerts in between ClientHello and
@@ -516,7 +481,7 @@ static enum ssl_hs_wait_t do_early_reverify_server_certificate(
 
 static bool handle_hello_verify_request(SSL_HANDSHAKE *hs,
                                         const SSLMessage &msg) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   assert(SSL_is_dtls(ssl));
   assert(msg.type == DTLS1_MT_HELLO_VERIFY_REQUEST);
   assert(!hs->received_hello_verify_request);
@@ -580,7 +545,7 @@ bool ssl_parse_server_hello(ParsedServerHello *out, uint8_t *out_alert,
 }
 
 static enum ssl_hs_wait_t do_read_server_hello(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   SSLMessage msg;
   if (!ssl->method->get_message(ssl, &msg)) {
     return ssl_hs_read_server_hello;
@@ -841,7 +806,7 @@ static enum ssl_hs_wait_t do_tls13(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_read_server_certificate(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
 
   if (!ssl_cipher_uses_certificate_auth(hs->new_cipher)) {
     hs->state = state_read_certificate_status;
@@ -901,7 +866,7 @@ static enum ssl_hs_wait_t do_read_server_certificate(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_read_certificate_status(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
 
   if (!hs->certificate_status_expected) {
     hs->state = state_verify_server_certificate;
@@ -987,7 +952,7 @@ static enum ssl_hs_wait_t do_reverify_server_certificate(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_read_server_key_exchange(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   SSLMessage msg;
   if (!ssl->method->get_message(ssl, &msg)) {
     return ssl_hs_read_message;
@@ -1162,7 +1127,7 @@ static enum ssl_hs_wait_t do_read_server_key_exchange(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_read_certificate_request(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
 
   if (!ssl_cipher_uses_certificate_auth(hs->new_cipher)) {
     hs->state = state_read_server_hello_done;
@@ -1234,7 +1199,7 @@ static enum ssl_hs_wait_t do_read_certificate_request(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_read_server_hello_done(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   SSLMessage msg;
   if (!ssl->method->get_message(ssl, &msg)) {
     return ssl_hs_read_message;
@@ -1306,7 +1271,7 @@ static bool check_credential(SSL_HANDSHAKE *hs, const SSLCredential *cred,
 }
 
 static enum ssl_hs_wait_t do_send_client_certificate(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
 
   // The peer didn't request a certificate.
   if (!hs->cert_request) {
@@ -1382,7 +1347,7 @@ static_assert(sizeof(size_t) >= sizeof(unsigned),
               "size_t is smaller than unsigned");
 
 static enum ssl_hs_wait_t do_send_client_key_exchange(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   ScopedCBB cbb;
   CBB body;
   if (!ssl->method->init_message(ssl, cbb.get(), &body,
@@ -1538,7 +1503,7 @@ static enum ssl_hs_wait_t do_send_client_key_exchange(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_send_client_certificate_verify(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
 
   if (!hs->cert_request || hs->credential == nullptr) {
     hs->state = state_send_client_finished;
@@ -1595,7 +1560,7 @@ static enum ssl_hs_wait_t do_send_client_certificate_verify(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_send_client_finished(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   hs->can_release_private_key = true;
   if (!ssl->method->add_change_cipher_spec(ssl) ||
       !tls1_change_cipher_state(hs, evp_aead_seal)) {
@@ -1641,7 +1606,7 @@ static enum ssl_hs_wait_t do_send_client_finished(SSL_HANDSHAKE *hs) {
 }
 
 static bool can_false_start(const SSL_HANDSHAKE *hs) {
-  const SSL *const ssl = hs->ssl;
+  const SSLImpl *const ssl = hs->ssl;
 
   // False Start bypasses the Finished check's downgrade protection. This can
   // enable attacks where we send data under weaker settings than supported
@@ -1680,7 +1645,7 @@ static bool can_false_start(const SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_finish_flight(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   if (ssl->session != nullptr) {
     hs->state = state_finish_client_handshake;
     return ssl_hs_ok;
@@ -1708,7 +1673,7 @@ static enum ssl_hs_wait_t do_finish_flight(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_read_session_ticket(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
 
   if (!hs->ticket_expected) {
     hs->state = state_process_change_cipher_spec;
@@ -1786,7 +1751,7 @@ static enum ssl_hs_wait_t do_process_change_cipher_spec(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_read_server_finished(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   enum ssl_hs_wait_t wait = ssl_get_finished(hs);
   if (wait != ssl_hs_ok) {
     return wait;
@@ -1802,7 +1767,7 @@ static enum ssl_hs_wait_t do_read_server_finished(SSL_HANDSHAKE *hs) {
 }
 
 static enum ssl_hs_wait_t do_finish_client_handshake(SSL_HANDSHAKE *hs) {
-  SSL *const ssl = hs->ssl;
+  SSLImpl *const ssl = hs->ssl;
   if (ssl->s3->ech_status == ssl_ech_rejected) {
     // Release the retry configs.
     hs->ech_authenticated_reject = true;

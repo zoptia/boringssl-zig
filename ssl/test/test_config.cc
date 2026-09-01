@@ -343,6 +343,8 @@ const Flag<TestConfig> *FindFlag(const char *name) {
                       &TestConfig::expect_peer_verify_prefs),
         IntVectorFlag("-curves", &TestConfig::curves),
         IntVectorFlag("-curves-flags", &TestConfig::curves_flags),
+        IntVectorFlag("-tls13-ciphers", &TestConfig::tls13_ciphers),
+        IntVectorFlag("-tls13-ciphers-flags", &TestConfig::tls13_ciphers_flags),
         OptionalIntVectorFlag("-key-shares", &TestConfig::key_shares),
         SetValueFlag("-no-key-shares", &TestConfig::key_shares,
                      std::vector<uint16_t>{}),
@@ -351,6 +353,8 @@ const Flag<TestConfig> *FindFlag(const char *name) {
         StringFlag("-trust-cert", &TestConfig::trust_cert),
         StringFlag("-expect-server-name", &TestConfig::expect_server_name),
         BoolFlag("-enable-ech-grease", &TestConfig::enable_ech_grease),
+        BoolFlag("-reject-unusable-ech-config",
+                 &TestConfig::reject_unusable_ech_config),
         Base64VectorFlag("-ech-server-config", &TestConfig::ech_server_configs),
         Base64VectorFlag("-ech-server-key", &TestConfig::ech_server_keys),
         IntVectorFlag("-ech-is-retry-config", &TestConfig::ech_is_retry_config),
@@ -526,7 +530,6 @@ const Flag<TestConfig> *FindFlag(const char *name) {
         StringFlag("-expect-msg-callback", &TestConfig::expect_msg_callback),
         BoolFlag("-allow-false-start-without-alpn",
                  &TestConfig::allow_false_start_without_alpn),
-        BoolFlag("-handoff", &TestConfig::handoff),
         BoolFlag("-handshake-hints", &TestConfig::handshake_hints),
         BoolFlag("-allow-hint-mismatch", &TestConfig::allow_hint_mismatch),
         BoolFlag("-use-ocsp-callback", &TestConfig::use_ocsp_callback),
@@ -629,7 +632,11 @@ const Flag<TestConfig> *FindFlag(const char *name) {
         CredentialFlag(SetValueFlag("-psk-importer-sha384",
                                     &CredentialConfig::psk_hash, EVP_sha384())),
         CredentialFlag(
-            Base64Flag("-trust-anchor-id", &CredentialConfig::trust_anchor_id)),
+            Base64Flag("-cert-properties", &CredentialConfig::cert_properties)),
+        CredentialFlagWithDefault(
+            Base64Flag("-session-id-context", &TestConfig::session_id_context),
+            Base64Flag("-session-id-context",
+                       &CredentialConfig::session_id_context)),
         IntFlag("-private-key-delay-ms", &TestConfig::private_key_delay_ms),
         BoolFlag("-resumption-across-names-enabled",
                  &TestConfig::resumption_across_names_enabled),
@@ -1640,12 +1647,21 @@ static bssl::UniquePtr<SSL_CREDENTIAL> CredentialFromConfig(
     SSL_CREDENTIAL_set_must_match_issuer(cred.get(), 1);
   }
 
-  if (!cred_config.trust_anchor_id.empty()) {
-    if (!SSL_CREDENTIAL_set1_trust_anchor_id(
-            cred.get(), cred_config.trust_anchor_id.data(),
-            cred_config.trust_anchor_id.size())) {
+  if (!cred_config.cert_properties.empty()) {
+    bssl::UniquePtr<CRYPTO_BUFFER> buf(
+        CRYPTO_BUFFER_new(cred_config.cert_properties.data(),
+                          cred_config.cert_properties.size(), nullptr));
+    if (buf == nullptr ||
+        !SSL_CREDENTIAL_set1_certificate_properties(cred.get(), buf.get())) {
       return nullptr;
     }
+  }
+
+  if (!cred_config.session_id_context.empty() &&
+      !SSL_CREDENTIAL_set1_session_id_context(
+          cred.get(), cred_config.session_id_context.data(),
+          cred_config.session_id_context.size())) {
+    return nullptr;
   }
 
   if (!SetCredentialInfo(cred.get(), std::move(info))) {
@@ -2120,6 +2136,7 @@ bssl::UniquePtr<SSL_CTX> TestConfig::SetupCtx(SSL_CTX *old_ctx) const {
 
   if (enable_grease) {
     SSL_CTX_set_grease_enabled(ssl_ctx.get(), 1);
+    SSL_CTX_set_grease_sigalgs_enabled(ssl_ctx.get(), 1);
   }
 
   if (permute_extensions) {
@@ -2155,6 +2172,12 @@ bssl::UniquePtr<SSL_CTX> TestConfig::SetupCtx(SSL_CTX *old_ctx) const {
 
   if (resumption_across_names_enabled) {
     SSL_CTX_set_resumption_across_names_enabled(ssl_ctx.get(), 1);
+  }
+
+  if (!session_id_context.empty() &&
+      !SSL_CTX_set_session_id_context(ssl_ctx.get(), session_id_context.data(),
+                                      session_id_context.size())) {
+    return nullptr;
   }
 
   if (old_ctx) {
@@ -2449,6 +2472,9 @@ bssl::UniquePtr<SSL> TestConfig::NewSSL(
   if (enable_ech_grease) {
     SSL_set_enable_ech_grease(ssl.get(), 1);
   }
+  if (reject_unusable_ech_config) {
+    SSL_set_reject_unusable_ech_config(ssl.get(), 1);
+  }
   if (!ech_config_list.empty() &&
       !SSL_set1_ech_config_list(ssl.get(), ech_config_list.data(),
                                 ech_config_list.size())) {
@@ -2586,6 +2612,21 @@ bssl::UniquePtr<SSL> TestConfig::NewSSL(
       }
     } else {
       if (!SSL_set1_group_ids(ssl.get(), curves.data(), curves.size())) {
+        return nullptr;
+      }
+    }
+  }
+  if (!tls13_ciphers.empty()) {
+    if (!tls13_ciphers_flags.empty()) {
+      if (tls13_ciphers.size() != tls13_ciphers_flags.size() ||
+          !SSL_set1_tls13_ciphers(ssl.get(), tls13_ciphers.data(),
+                                  tls13_ciphers_flags.data(),
+                                  tls13_ciphers.size())) {
+        return nullptr;
+      }
+    } else {
+      if (!SSL_set1_tls13_ciphers(ssl.get(), tls13_ciphers.data(),
+                                  /*flags=*/nullptr, tls13_ciphers.size())) {
         return nullptr;
       }
     }
