@@ -20,7 +20,7 @@ churn is mostly absorbed without touching `build.zig`.
 Add this package to your project:
 
 ```sh
-zig fetch --save=boringssl git+https://github.com/zoptia/zoptia0boringssl#v0.20260513.0
+zig fetch --save=boringssl git+https://github.com/zoptia/zoptia0boringssl#v0.20260901.0
 ```
 
 Then in your `build.zig`:
@@ -225,7 +225,7 @@ above).
 
 Tags follow `v0.YYYYMMDD.0`, where `YYYYMMDD` is the date of the upstream
 BoringSSL commit that was merged. The `.0` patch component bumps for
-build-system-only fixes between syncs (e.g., `v0.20260513.1`).
+build-system-only fixes between syncs (e.g., `v0.20260901.1`).
 
 ## Maintainer guide
 
