@@ -1,6 +1,6 @@
 .{
     .name = .zoptia0boringssl,
-    .version = "0.20260901.0",
+    .version = "0.20260902.0",
     .fingerprint = 0xb4a8af6c8ab1b423,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
