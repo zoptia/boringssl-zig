@@ -62,7 +62,7 @@ constexpr uint32_t kPrime = 8380417;
 constexpr uint32_t kPrimeNegInverse = 4236238847;
 constexpr int kDroppedBits = 13;
 constexpr uint32_t kHalfPrime = (kPrime - 1) / 2;
-// 256^-1 * R^2 mod kPrime. This is not 256^-1 in Montgomery form, but 256^-1
+// 256^-1 ⋅ R² mod kPrime. This is not 256^-1 in Montgomery form, but 256^-1
 // doubly-converted to Montgomery form.
 constexpr uint32_t kInverseDegreeDoubleMontgomery = 41978;
 
@@ -458,7 +458,7 @@ inline void scalar_inverse_ntt_montgomery(scalar *s) {
   // Intermediate values of `s` are not fully reduced. `ITER` writes
   // to every element of `s` exactly once. Each write either adds two values
   // from the previous iteration, or is at most 2 * kPrime. After eight
-  // iterations, each element will be less than 2^8 * kPrime = 256 * kPrime.
+  // iterations, each element will be less than 2⁸ * kPrime = 256 * kPrime.
   // This fits in `uint32_t`, so we never overflow.
 #define ITER(step, offset)                                                  \
   {                                                                         \
@@ -578,12 +578,12 @@ inline void power2_round(uint32_t *r1, uint32_t *r0, uint32_t r) {
 
 // Scale back previously rounded value.
 inline void scale_power2_round(uint32_t *out, uint32_t r1) {
-  // Pre-condition: 0 <= r1 <= 2^10 - 1
+  // Pre-condition: 0 ≤ r1 ≤ 2^10 - 1
   assert(r1 < (1u << 10));
 
   *out = r1 << kDroppedBits;
 
-  // Post-condition: 0 <= out <= 2^23 - 2^13 = kPrime - 1
+  // Post-condition: 0 ≤ out ≤ 2^23 - 2^13 = kPrime - 1
   assert(*out < kPrime);
 }
 
@@ -606,7 +606,7 @@ inline uint32_t high_bits(uint32_t x) {
     // Below is the formula taken from the reference implementation.
     //
     // Here, Gamma2 == 2^18 - 2^8
-    // This returns ((ceil(x / 2^7) * (2^10 + 1) + 2^21) / 2^22) mod 2^4
+    // This returns ((ceil(x / 2^7) ⋅ (2^10 + 1) + 2^21) / 2^22) mod 2^4
     r1 = (r1 * 1025 + (1 << 21)) >> 22;
     r1 &= 15;
   } else if constexpr (prime_minus_one_over_gamma2<K>() == 88) {
@@ -1195,7 +1195,30 @@ inline int scalar_decode_signed<20, (1u << 19)>(scalar *out,
 // is used for matrix expansion and only operates on public inputs.
 inline void scalar_from_keccak_block_vartime(scalar *out, int *done,
                                              const uint8_t block[168]) {
-  for (size_t i = 0; i < 168 && *done < kDegree; i += 3) {
+  // kStep is the number of loop iterations to do at once. May need to become
+  // platform dependent at some point. Must be a compile-time constant - if we
+  // ever need to runtime dispatch on it, it has to be made a template argument.
+  const size_t kStep = 2;
+
+  // Branchless sampling as long as there is enough space in the output buffer
+  // even if all sampled numbers are < `kPrime`.
+  size_t i = 0;
+  for (; i <= int{168 - 3 * kStep} && *done <= int{kDegree - kStep};
+       i += 3 * kStep) {
+    uint32_t d[kStep];
+    for (size_t k = 0; k < kStep; ++k) {
+      size_t bi = i + 3 * k;
+      d[k] = (uint32_t)block[bi] | ((uint32_t)block[bi + 1] << 8) |
+             (((uint32_t)block[bi + 2] & 0x7f) << 16);
+    }
+    for (size_t k = 0; k < kStep; ++k) {
+      out->c[*done] = d[k];
+      *done += d[k] < kPrime;
+    }
+  }
+
+  // Branchful "tail".
+  for (; i < 168 && *done < kDegree; i += 3) {
     // FIPS 204, Algorithm 14 (`CoeffFromThreeBytes`).
     uint32_t value = (uint32_t)block[i] | ((uint32_t)block[i + 1] << 8) |
                      (((uint32_t)block[i + 2] & 0x7f) << 16);
@@ -1271,26 +1294,20 @@ inline bool coefficient_from_nibble(uint32_t nibble, uint32_t *result);
 
 template <>
 inline bool coefficient_from_nibble<4>(uint32_t nibble, uint32_t *result) {
-  if (constant_time_declassify_int(nibble < 9)) {
-    // Knowing bounds on `nibble` seems to tempt some versions of Clang to emit
-    // a branch, if we don't have a barrier in `mod_sub`.
-    *result = mod_sub(4, value_barrier_u32(nibble));
-    return true;
-  }
-  return false;
+  // Knowing bounds on `nibble` seems to tempt some versions of Clang to emit
+  // a branch, if we don't have a barrier in `mod_sub`.
+  *result = mod_sub(4, value_barrier_u32(nibble));
+  return constant_time_declassify_int(nibble < 9);
 }
 
 template <>
 inline bool coefficient_from_nibble<2>(uint32_t nibble, uint32_t *result) {
-  if (constant_time_declassify_int(nibble < 15)) {
-    // Knowing bounds on `nibble` seems to tempt some versions of Clang to emit
-    // a branch, if we don't have a barrier in `mod_sub`.
-    // Constant time "nibble % 5".
-    nibble = nibble - 5 * ((205 * nibble) >> 10);
-    *result = mod_sub(2, value_barrier_u32(nibble));
-    return true;
-  }
-  return false;
+  // Knowing bounds on `nibble` seems to tempt some versions of Clang to emit
+  // a branch, if we don't have a barrier in `mod_sub`.
+  // Constant time "nibble % 5".
+  uint32_t rem = nibble - 5 * ((205 * nibble) >> 10);
+  *result = mod_sub(2, value_barrier_u32(rem));
+  return constant_time_declassify_int(nibble < 15);
 }
 
 template <int ETA>
@@ -1304,12 +1321,9 @@ inline void scalar_uniform_block(scalar *out, int *done,
     // Individual bytes of the SHAKE-256 stream are (indistinguishable from)
     // independent of each other and the original seed, so leaking information
     // about the rejected bytes does not reveal the input or output.
-    uint32_t v;
-    if (coefficient_from_nibble<ETA>(t0, &v)) {
-      out->c[(*done)++] = v;
-    }
-    if (*done < kDegree && coefficient_from_nibble<ETA>(t1, &v)) {
-      out->c[(*done)++] = v;
+    *done += coefficient_from_nibble<ETA>(t0, &out->c[*done]);
+    if (*done < kDegree) {
+      *done += coefficient_from_nibble<ETA>(t1, &out->c[*done]);
     }
   }
 }
