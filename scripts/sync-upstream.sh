@@ -30,16 +30,30 @@ git fetch "$REMOTE_NAME" "$UPSTREAM_BRANCH"
 echo "Merging $REMOTE_NAME/$UPSTREAM_BRANCH..."
 git merge --no-edit "$REMOTE_NAME/$UPSTREAM_BRANCH"
 
-# The fork freezes a de-ELF'd copy of two upstream fiat P-256 ADX asm bodies in
-# src/win_fiat/ (for the win64 build). Those live at a non-colliding path, so an
-# upstream regeneration of the originals merges cleanly and would NOT raise a
-# git conflict — it would silently leave our copy stale. Catch that here.
+# Upstream gates its fiat P-256 ADX SysV assembly on `__ELF__ || __APPLE__` in
+# third_party/fiat/p256_64.h, so COFF builds never reference
+# fiat_p256_adx_{mul,sqr}. If that gate ever loosens again (it was `__GNUC__`
+# before upstream 28950bf42), win64 would reference a SysV-only body that is not
+# assembled on PE/COFF — and, lacking a sysv_abi attribute, would call it with
+# the wrong convention. Warn here so it is caught before a release, not by a
+# downstream link error.
 echo
-echo "Checking win64 fiat shim against upstream..."
-if ! scripts/check-win-fiat.sh; then
-    echo
-    echo "WARNING: src/win_fiat/ drifted from upstream (see above). The merge is" >&2
-    echo "done, but regenerate the de-ELF'd body before shipping a win64 build." >&2
+gate_file="third_party/fiat/p256_64.h"
+echo "Checking fiat P-256 ADX gate in $gate_file..."
+if [ -f "$gate_file" ] && grep -q 'void fiat_p256_adx_mul' "$gate_file"; then
+    # The `#if` line directly governing the declaration, plus its continuation.
+    gate="$(sed -n '1,/void fiat_p256_adx_mul/p' "$gate_file" | grep -A1 '^#if' | tail -2)"
+    if printf '%s' "$gate" | grep -q '__ELF__'; then
+        echo "ok: fiat_p256_adx_* still gated on __ELF__/__APPLE__ (COFF unaffected)"
+    else
+        echo "WARNING: $gate_file no longer gates fiat_p256_adx_* on __ELF__:" >&2
+        printf '%s\n' "$gate" >&2
+        echo "  win64 (nasm path) may now reference SysV-only assembly. Verify the" >&2
+        echo "  x86_64-windows-gnu build; see git history of src/win_fiat/ for the" >&2
+        echo "  Win64->SysV shim that used to cover this." >&2
+    fi
+else
+    echo "notice: fiat_p256_adx_* not declared in $gate_file; gate check skipped"
 fi
 
 echo

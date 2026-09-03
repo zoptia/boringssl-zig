@@ -25,21 +25,14 @@ jobs:
           # Re-enable once availability improves, or move to a self-hosted
           # Intel Mac.
           # - { os: macos-13,         label: macos-x86_64,         target: x86_64-macos,         extra: ""            }
-          # Windows x86_64 keeps asm ON. Upstream ships the fiat P-256 ADX field
-          # ops only as (__APPLE__ || __ELF__)-guarded GAS (empty on COFF/PE) with
-          # no nasm variant, yet p256_internal.h references them on mingw/clang
-          # (__GNUC__ && OPENSSL_X86_64) — and, unlike curve25519, with no
-          # sysv_abi attribute, so the MS-x64 call site mismatches the SysV body.
-          # src/win_fiat/ supplies a fork-owned, de-ELF'd COFF build of each op
-          # wrapped in a Win64->SysV shim (see build.zig + scripts/check-win-fiat.sh),
-          # so the link resolves AND the arithmetic is correct. run_test_all runs
-          # p256_test/CHECK_ABI on a real ADX runner — the check that would have
-          # caught the original ABI bug. NASM assembles the remaining perlasm.
+          # Windows x86_64 keeps asm ON: NASM assembles the perlasm .asm files.
+          # Upstream gates its fiat P-256 ADX SysV assembly on __ELF__ || __APPLE__,
+          # so COFF never references it and no substitute is needed (see the gate
+          # check in scripts/sync-upstream.sh). run_test_all runs p256_test and
+          # CHECK_ABI on a real ADX runner.
           - { os: windows-latest,   label: windows-x86_64-gnu,   target: x86_64-windows-gnu,   extra: "",            run_smoke: true,  use_nasm: true,  run_test_all: true  }
-          # windows-msvc: MSVC defines no __GNUC__, so it never references the
-          # fiat_p256_adx ops at all (the win_fiat shim is harmlessly unused).
-          # Asm stays on; build-only because Zig 0.16's bundled libcxx clashes
-          # with MSVC's <typeinfo> when linking a Zig executable.
+          # windows-msvc: asm stays on; build-only because Zig 0.16's bundled
+          # libcxx clashes with MSVC's <typeinfo> when linking a Zig executable.
           - { os: windows-latest,   label: windows-x86_64-msvc,  target: x86_64-windows-msvc,  extra: "",            run_smoke: false, use_nasm: true,  run_test_all: false }
     runs-on: ${{ matrix.os }}
     steps:

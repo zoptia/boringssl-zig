@@ -251,6 +251,14 @@ git tag -a "$TAG" -m "Sync upstream BoringSSL $(date -u +%Y-%m-%d)"
 git push origin "$TAG"
 ```
 
+Because upstream is always an ancestor of `main`, the fork's entire delta
+is one diff away — no squashing or rebasing needed to see it:
+
+```sh
+git diff --stat upstream/main HEAD          # every file the fork adds or changes
+git log --no-merges upstream/main..HEAD     # the fork's own commits, without merges
+```
+
 `scripts/sync-upstream.sh` is idempotent: it adds an `upstream` remote on
 first run if not present, then `git fetch upstream && git merge upstream/main`.
 Conflicts are rare — most file paths owned by us (`build.zig`, `src/…`,
